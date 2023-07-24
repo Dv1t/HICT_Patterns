@@ -1,0 +1,10 @@
+
+*.png
+*.csv
+*.mcool
+*.agp
+__pycache__
+build_scripts
+data
+datasets
+checkpoints
