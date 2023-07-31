@@ -5,6 +5,13 @@ import pandas as pd
 
 resolution = 10000
 
+def save_sample_by_row(row, label):
+    point_uncentered = (row.start_res, row.end_res)
+    point_area_uncentered = matrix[point_uncentered[1] - 10:point_uncentered[1] + 10,
+                            point_uncentered[0] - 10:point_uncentered[0] + 10]
+    plt.imsave(f'datasets/images_10/positive/{label}{prefix_file}_{chr[-1]}_{row.start}_{row.end}.png',
+               point_area_uncentered, cmap='gray', vmax=max_value, vmin=min_value)
+
 for prefix_cool, prefix_csv, prefix_file in zip(('_short_', '_short_2_', '_long_', '2_short_', '2_short_2_', '2_long_'),
                   ('_short', '_short_2', '_long', '_short', '_short_2', '_long'),
                   ('', '', '', '2', '2', '2')):
@@ -25,12 +32,7 @@ for prefix_cool, prefix_csv, prefix_file in zip(('_short_', '_short_2_', '_long_
         for label, folder in (('+-','plus_minus'), ('-+','minus_plus'), ('++','plus_plus'), ('--','minus_minus')):
             cur_trans = trans[trans.label == label]
             for i, row in cur_trans.iterrows():
-                point_start = (row.start_res, row.start_res)
-                point_end = (row.end_res, row.end_res)
-                point_area_start = matrix[point_start[1]-10:point_start[1]+10, point_start[0]-10:point_start[0]+10]
-                point_area_end = matrix[point_end[1]-10:point_end[1]+10, point_end[0]-10:point_end[0]+10]
-                plt.imsave(f'datasets/images_center_10/positive/ZANU{prefix_file}_{chr[-1]}_{row.start}_{row.start}.png', point_area_start, cmap='gray', vmax=max_value, vmin=min_value)
-                plt.imsave(f'datasets/images_center_10/positive/ZANU{prefix_file}_{chr[-1]}_{row.end}_{row.end}.png', point_area_end, cmap='gray', vmax=max_value, vmin=min_value)
+                save_sample_by_row(row, 'ZANU')
 
 
 for prefix_cool, prefix_csv, prefix_file in zip(('_short_', '_short_2_', '_medium_', '_long_', '2_short_', '2_short_2_', '2_medium_', '2_long_'),
@@ -53,9 +55,12 @@ for prefix_cool, prefix_csv, prefix_file in zip(('_short_', '_short_2_', '_mediu
         for label, folder in (('+-','plus_minus'), ('-+','minus_plus'), ('++','plus_plus'), ('--','minus_minus')):
             cur_trans = trans[trans.label == label]
             for i, row in cur_trans.iterrows():
+                save_sample_by_row(row, 'ARAB')
+                '''
                 point_start = (row.start_res, row.start_res)
                 point_end = (row.end_res, row.end_res)
                 point_area_start = matrix[point_start[1]-10:point_start[1]+10, point_start[0]-10:point_start[0]+10]
                 point_area_end = matrix[point_end[1]-10:point_end[1]+10, point_end[0]-10:point_end[0]+10]
                 plt.imsave(f'datasets/images_center_10/positive/ARAB{prefix_file}_{chr[-1]}_{row.start}_{row.start}.png', point_area_start, cmap='gray', vmax=max_value, vmin=min_value)
                 plt.imsave(f'datasets/images_center_10/positive/ARAB{prefix_file}_{chr[-1]}_{row.end}_{row.end}.png', point_area_end, cmap='gray', vmax=max_value, vmin=min_value)
+                '''
