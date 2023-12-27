@@ -8,3 +8,5 @@ build_scripts
 data
 datasets
 checkpoints
+dist/new_venv
+HiCT_venv

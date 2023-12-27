@@ -35,17 +35,17 @@ def produce_model(train_dataset_path: pathlib.Path, device_name: string, single_
 
     def __create_model_cnn():
         model = Sequential([
-            keras.layers.Rescaling(1. / 255, input_shape=(img_height, img_width, 3), name='rescaling_1_1'),
+            keras.layers.Rescaling(1. / 255, input_shape=(img_height, img_width, 3)),
             keras.layers.Conv2D(16, 3, padding='same', activation='relu'),
-            keras.layers.MaxPooling2D(),
+            keras.layers.AveragePooling2D(),
             keras.layers.Conv2D(32, 3, padding='same', activation='relu'),
-            keras.layers.MaxPooling2D(),
+            keras.layers.AveragePooling2D(),
             keras.layers.Conv2D(64, 3, padding='same', activation='relu'),
-            keras.layers.MaxPooling2D(),
+            keras.layers.AveragePooling2D(),
             keras.layers.Dropout(0.2),
             keras.layers.Flatten(),
             keras.layers.Dense(128, activation='relu'),
-            keras.layers.Dense(num_classes)
+            keras.layers.Dense(num_classes, activation='sigmoid')
         ])
         model.compile(optimizer='adam',
                       loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
