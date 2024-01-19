@@ -97,6 +97,32 @@ class DetectModel(nn.Module):
         out = self.classifier(out)
         return out
 
+class ClassificationModel(nn.Module):
+    def __init__(self, in_channels=1, image_size=40, num_models=10, num_classes=3):
+        super(ClassificationModel, self).__init__()
+        
+        self.features = nn.Sequential(OrderedDict([]))
+        self.features.add_module('super_block', DetectAssembleBlock(in_channels, num_models))
+
+        num_features = ((image_size//8)**2) * 64 * num_models
+        self.classifier = nn.Sequential(
+            nn.Linear(num_features, 1024),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(1024, 256),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(256, num_classes),
+            nn.Softmax()
+        )
+        
+    def forward(self, x):
+        features = self.features(x)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = torch.flatten(features, 1)
+        out = self.classifier(out)
+        return out
 
 class EvalDatasetDiag(Dataset):
     def __init__(self, cooler_path, resolution, image_size, step, device):
@@ -265,8 +291,28 @@ class ClearPatchesDataset(Dataset):
         mat = np.log2(self.cooler[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
         return mat, (x, y)
 
+class ClassificationDataset(Dataset):
+    def __init__(self, cooler_path, resolution, image_size, coords, device):
+        self.resolution = resolution
+        self.image_size = image_size
+        c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}').matrix(balance=False)
+        self.cooler = c
+        self.coords_list = coords
+        self.blur = GaussianBlur(kernel_size=3, sigma=1)
+        self.device = device
 
-def __save_detection_visualisation(local_path, detected, name):
+    def __len__(self):
+        return len(self.coords_list)
+
+    def __getitem__(self, idx):
+        x, y = self.coords_list[idx]
+        mat = np.log2(self.cooler[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
+        mat = np.nan_to_num(mat, neginf=0, posinf=0)
+        tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
+        tens = self.blur(tens)
+        return tens, self.coords_list[idx]
+
+def __save_result_to_csv(local_path, detected, name):
     np.savetxt(f"{local_path}/{name}.csv",
         detected,
         delimiter =",",
@@ -275,7 +321,7 @@ def __save_detection_visualisation(local_path, detected, name):
 def __perform_detection(model, dataloader):
     detected = []
     cur_tqdm = tqdm(dataloader)
-    for data, position in dataloader:
+    for data, position in cur_tqdm:
         output = model(data)
         labels = torch.round(output).detach().cpu().numpy().reshape(-1)
         x_list = position[0][labels==1]
@@ -285,7 +331,20 @@ def __perform_detection(model, dataloader):
                 detected.append((x, y))
     return detected
 
-def predict(file_path, search_in_1k, batch_size, device):
+__index_to_label = ['negative', 'inversion', 'copy_loss']
+
+def __perform_classification(model, dataloader):
+    classified = []
+    cur_tqdm = tqdm(dataloader)
+    for data, position in cur_tqdm:
+        output = model(data)
+        labels = torch.argmax(output, dim=1).reshape(-1)
+        for x_y, label in zip(position.numpy(), labels):
+            #if __index_to_label[label] != 'negative':
+            classified.append((x_y[0], x_y[1], __index_to_label[label]))
+    return classified
+
+def predict(file_path, weights_path, search_in_1k, batch_size, device):
     local_path = os.getcwd()
 
     #Stage 1 - 50k, diagonal detection
@@ -300,7 +359,7 @@ def predict(file_path, search_in_1k, batch_size, device):
     model.eval()
 
     detected = __perform_detection(model, DataLoader(dataset, batch_size=64))
-    __save_detection_visualisation(local_path, detected, 'stage1')
+    __save_result_to_csv(local_path, detected, 'stage1')
 
     #Stage 2 - 10k, diagonal detection
     print('Started Stage 2')
@@ -321,7 +380,7 @@ def predict(file_path, search_in_1k, batch_size, device):
     dataset = PatchesDiagDataset(matrices_det, image_size_1, image_size_2, resolution_1, resolution_2, 12, device=device)
     print('Stage 2 dataset loaded')
     detected_2 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-    __save_detection_visualisation(local_path, detected_2, 'stage2')
+    __save_result_to_csv(local_path, detected_2, 'stage2')
 
     #Stage 3 - 10k, whole map detection
     print('Started Stage 3')
@@ -342,7 +401,7 @@ def predict(file_path, search_in_1k, batch_size, device):
     model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_10k_48_patch.pt', map_location=device))
     model.eval()
     detected_3 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-    __save_detection_visualisation(local_path, detected_3, 'stage3')
+    __save_result_to_csv(local_path, detected_3, 'stage3')
 
     #Stage 4 - 5k, improve accuracy
     print('Started Stage 4')
@@ -356,7 +415,7 @@ def predict(file_path, search_in_1k, batch_size, device):
     model.eval()
 
     detected_4 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-    __save_detection_visualisation(local_path, detected_4, 'stage4')
+    __save_result_to_csv(local_path, detected_4, 'stage4')
 
     #Stage 4.5 - 5k, unite intersected detection boxes
     print('Started Stage 4.5')
@@ -391,22 +450,36 @@ def predict(file_path, search_in_1k, batch_size, device):
         dot = ((position[0].item()+center[0], position[1].item()+center[1]))
         detected_5.append(dot)
 
-    __save_detection_visualisation(local_path, detected_5, 'stage5')
+    __save_result_to_csv(local_path, detected_5, 'stage5')
+
+    resolution_6 = 10000
+    image_size_6 = 24
+    detected_for_cls = np.array(detected_5) // (resolution_6//resolution_4)
+    dataset = ClassificationDataset(file_path, resolution_6, image_size_5, detected_for_cls, device)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    model = ClassificationModel(in_channels=1, image_size=image_size_6, num_models=10, num_classes=3)
+    model.to(device)
+    model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_5k_24_classify.pt', map_location=device))
+    model.eval()
+    classified = __perform_classification(model, DataLoader(dataset, batch_size=batch_size))
+    __save_result_to_csv(local_path, classified, 'classification')
+
     result_file_name = 'stage5.csv'
     last_resolution = resolution_4
     if search_in_1k:
         #Stage 6 - 1k, try to find location more precisely
         print('Started Stage 6')
-        resolution_6 = 1000
-        image_size_6 = image_size_5*(resolution_4//resolution_6)
-        res_step = resolution_4 // resolution_6
-        dataset = ClearPatchesDataset(file_path, resolution_6, image_size_6, detected_5, res_step)
+        resolution_7 = 1000
+        image_size_7 = image_size_5*(resolution_4//resolution_7)
+        res_step = resolution_4 // resolution_7
+        dataset = ClearPatchesDataset(file_path, resolution_7, image_size_7, detected_5, res_step)
         dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
         detected_6 = []
         for data, position in tqdm(dataloader):
             patch = data[0].cpu().numpy()
             max_value = np.nanmax(patch)
-            center_value = patch[image_size_6//2, image_size_6//2]
+            center_value = patch[image_size_7//2, image_size_7//2]
             if max_value-center_value > max_value//4:
                 center = np.unravel_index(patch.argmax(), patch.shape)
                 dot = ((position[0].item()+center[0], position[1].item()+center[1]))
@@ -414,15 +487,16 @@ def predict(file_path, search_in_1k, batch_size, device):
             else:
                 detected_6.append((position[0].item(), position[1].item()))
 
-        __save_detection_visualisation(local_path, detected_6, 'stage6')
+        __save_result_to_csv(local_path, detected_6, 'stage6')
         result_file_name = 'stage6.csv'
-        last_resolution = resolution_6
+        last_resolution = resolution_7
 
     last_detections = np.genfromtxt(f"{local_path}/{result_file_name}", delimiter=",")
     results = []
-    for d in last_detections:
-        results.append((int(d[0]*last_resolution), int(d[1]*last_resolution)))
-    __save_detection_visualisation(local_path, np.array(results), 'result')
+    for d, cls in zip(last_detections, classified):
+        if cls[2] != 'negative':
+            results.append((int(d[0]*last_resolution), int(d[1]*last_resolution), cls[2]))
+    __save_result_to_csv(local_path, np.array(results), 'result')
 
     print('Detection finished! Results are in result.csv')
 

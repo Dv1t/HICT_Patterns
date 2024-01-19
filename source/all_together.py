@@ -100,6 +100,34 @@ class DetectModel(nn.Module):
         return out
 
 
+class ClassificationModel(nn.Module):
+    def __init__(self, in_channels=1, image_size=40, num_models=10, num_classes=3):
+        super(ClassificationModel, self).__init__()
+        
+        self.features = nn.Sequential(OrderedDict([]))
+        self.features.add_module('super_block', DetectAssembleBlock(in_channels, num_models))
+
+        num_features = ((image_size//8)**2) * 64 * num_models
+        self.classifier = nn.Sequential(
+            nn.Linear(num_features, 1024),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(1024, 256),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(256, num_classes),
+            nn.Softmax()
+        )
+        
+    def forward(self, x):
+        features = self.features(x)
+        out = F.relu(features, inplace=True)
+        out = F.adaptive_avg_pool2d(out, (1, 1))
+        out = torch.flatten(features, 1)
+        out = self.classifier(out)
+        return out
+
+
 class EvalDatasetDiag(Dataset):
     def __init__(self, cooler_path, resolution, image_size, step):
         self.blur = GaussianBlur(kernel_size=3, sigma=1)
@@ -259,10 +287,32 @@ class ClearPatchesDataset(Dataset):
     def __getitem__(self, idx):
         x, y = self.coords_list[idx]
         mat = np.log2(self.cooler[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
-        return mat, self.coords_list[idx]
+        tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=device, dtype=torch.float)
+        return tens, self.coords_list[idx]
 
 
-def save_detection_visualisation(detected, name):
+class ClassificationDataset(Dataset):
+    def __init__(self, cooler_path, resolution, image_size, coords):
+        self.resolution = resolution
+        self.image_size = image_size
+        c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}').matrix(balance=False)
+        self.cooler = c
+        self.coords_list = coords
+        self.blur = GaussianBlur(kernel_size=3, sigma=1)
+
+    def __len__(self):
+        return len(self.coords_list)
+
+    def __getitem__(self, idx):
+        x, y = self.coords_list[idx]
+        mat = np.log2(self.cooler[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
+        mat = np.nan_to_num(mat, neginf=0, posinf=0)
+        tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=device, dtype=torch.float)
+        tens = self.blur(tens)
+        return tens, self.coords_list[idx]
+
+
+def save_detection_csv(detected, name):
     np.savetxt(f"{local_path}{name}.csv",
         detected,
         delimiter =",",
@@ -281,8 +331,20 @@ def perform_detection(model, dataloader):
                 detected.append((x, y))
     return detected
 
-file_path = 'data/dong_vs_gambiae/dong_colluzzii_4DN.mcool'
+index_to_label = ['negative', 'inversion', 'copy_loss']
 
+def perform_classification(model, dataloader):
+    classified = []
+    cur_tqdm = tqdm(dataloader)
+    for data, position in cur_tqdm:
+        output = model(data)
+        labels = torch.argmax(output, dim=1).reshape(-1)
+        for x_y, label in zip(position.numpy(), labels):
+            classified.append((x_y[0], x_y[1], index_to_label[label]))
+    return classified
+
+file_path = 'data/dong_vs_gambiae/dong_colluzzii_4DN.mcool'
+'''
 #Stage 1 - 50k, diagonal detection
 print('Started Stage 1')
 resolution_1 = 50000
@@ -295,7 +357,7 @@ model.load_state_dict(torch.load(f'{local_path}artifacts/torch_ensemble_50k_48_d
 model.eval()
 
 detected = perform_detection(model, DataLoader(dataset, batch_size=64))
-save_detection_visualisation(detected, 'stage1')
+save_detection_csv(detected, 'stage1')
 
 #Stage 2 - 10k, diagonal detection
 print('Started Stage 2')
@@ -316,7 +378,7 @@ model.eval()
 dataset = PatchesDiagDataset(matrices_det, image_size_1, image_size_2, resolution_1, resolution_2, 12)
 print('Stage 2 dataset loaded')
 detected_2 = perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-save_detection_visualisation(detected_2, 'stage2')
+save_detection_csv(detected_2, 'stage2')
 
 #Stage 3 - 10k, whole map detection
 print('Started Stage 3')
@@ -337,7 +399,7 @@ model.to(device)
 model.load_state_dict(torch.load(f'{local_path}artifacts/torch_ensemble_10k_48_patch.pt', map_location=device))
 model.eval()
 detected_3 = perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-save_detection_visualisation(detected_3, 'stage3')
+save_detection_csv(detected_3, 'stage3')
 
 #Stage 4 - 5k, improve accuracy
 print('Started Stage 4')
@@ -351,12 +413,14 @@ model.load_state_dict(torch.load(f'{local_path}artifacts/torch_ensemble_5k_48_cl
 model.eval()
 
 detected_4 = perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-save_detection_visualisation(detected_4, 'stage4')
-
-
+save_detection_csv(detected_4, 'stage4')
+'''
+resolution_4 = 5000
+image_size_4= 48
+detected_4 = np.genfromtxt(f"{local_path}stage4.csv", delimiter=",")
 #Stage 4.5 - 5k, unite intersected detection boxes
 print('Started Stage 4.5')
-
+detected_4 = np.array(detected_4)
 detected_4 = detected_4[np.argsort(detected_4.sum(axis=1))]
 intersec_dist = image_size_4*np.sqrt(2)
 def dist(d1, d2):
@@ -387,7 +451,7 @@ for data, position in tqdm(dataloader):
     dot = ((position[0].item()+center[0], position[1].item()+center[1]))
     detected_5.append(dot)
 
-save_detection_visualisation(detected_5, 'stage5')
+save_detection_csv(detected_5, 'stage5')
 
 #Stage 6 - 1k, try to find location more precisely
 print('Started Stage 6')
@@ -398,7 +462,7 @@ dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 detected_6 = []
 res_step = resolution_4 // resolution_6
 for data, position in tqdm(dataloader):
-    patch = data[0].cpu().numpy()
+    patch = data[0][0]
     max_value = np.nanmax(patch)
     center_value = patch[image_size_6//2, image_size_6//2]
     if max_value-center_value > max_value//4:
@@ -408,8 +472,17 @@ for data, position in tqdm(dataloader):
     else:
         detected_6.append((position[0].item()*res_step, position[1].item()*res_step))
 
-save_detection_visualisation(detected_6, 'stage6')
+save_detection_csv(detected_6, 'stage6')
 
+resolution_7 = 10000
+image_size_7 = 24
+detected_for_cls = np.array(detected_5) // (resolution_7//resolution_4)
+dataset = ClassificationDataset(f'{local_path}{file_path}', resolution_7, image_size_5, detected_for_cls)
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-
-
+model = ClassificationModel(in_channels=1, image_size=image_size_7, num_models=10, num_classes=3)
+model.to(device)
+model.load_state_dict(torch.load(f'{local_path}artifacts/torch_ensemble_5k_24_classify.pt', map_location=device))
+model.eval()
+classified = perform_classification(model, DataLoader(dataset, batch_size=batch_size))
+save_detection_csv(classified, 'classification')
