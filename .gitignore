@@ -6,7 +6,9 @@
 __pycache__
 build_scripts
 data
+build
 datasets
 checkpoints
-dist/new_venv
+dist
 HiCT_venv
+.eggs

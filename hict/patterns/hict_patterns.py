@@ -12,7 +12,9 @@ import argparse
 import pathlib
 import h5py
 import sys
-
+import pandas as pd
+import warnings
+import time
 
 class DetectBlock(nn.Module):
     def __init__(self, in_channels):
@@ -171,43 +173,34 @@ class PatchesDiagDataset(Dataset):
         tens = self.blur(tens)
         return tens, (self.patches_coords_list[idx][1], self.patches_coords_list[idx][1])
 
-    
 class PatchesDataset(Dataset):
-    def __init__(self, cooler_path, resolution, image_size, coords, device):
+    def __init__(self, cooler_path, resolution, image_size, coords_list, device):
         self.resolution = resolution
         self.image_size = image_size
         self.blur = GaussianBlur(kernel_size=3, sigma=1)
         self.device = device
-        c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}').matrix(balance=False)
+        c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
         self.cooler = c
-        #patches_list = []
-        coords_list = []
-        pad = image_size//2
-        for x in tqdm(coords):
-            for y in coords:
-                if x < y or  abs(x-y)<image_size: 
-                    continue
-                if x-pad < 0 or y - pad < 0:
-                    mv = max(-(x-pad), -(y-pad))
-                    x+=mv
-                    y+=mv
-                if x + pad > c.shape[0] or y + pad > c.shape[1]:
-                    mv = max(-c.shape[0]-(x+pad), -c.shape[0]-(y+pad))
-                    x-=mv
-                    y-=mv
-                coords_list.append((x, y))
         self.coords_list = coords_list
-
+        self.current_chr = coords_list[0][0]
+        self.matrix = c.matrix(balance=False).fetch(c.chromnames[self.current_chr[0]], c.chromnames[self.current_chr[1]])
     def __len__(self):
         return len(self.coords_list)
 
     def __getitem__(self, idx):
-        x, y = self.coords_list[idx]
-        mat = np.log10(self.cooler[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
+        chr_name, x_y = self.coords_list[idx]
+        x = x_y[0]
+        y = x_y[1]
+        if chr_name!=self.current_chr:
+            self.current_chr = chr_name
+            self.matrix = self.cooler.matrix(balance=False).fetch(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]])
+        mat = np.log10(self.matrix[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
+        if mat.shape[0] < self.image_size or mat.shape[1] < self.image_size:
+            return torch.zeros((1, self.image_size, self.image_size), device=self.device), torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
         mat = np.nan_to_num(mat, neginf=0, posinf=0)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
-        return tens, self.coords_list[idx]
+        return tens, torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
 
 
 class ClarifyDataset(Dataset):
@@ -318,6 +311,19 @@ def __save_result_to_csv(local_path, detected, name):
         delimiter =",",
         fmt ='% s')
 
+def __perform_detection_stage3(model, dataloader):
+    detected = []
+    cur_tqdm = tqdm(dataloader)
+    for data, position in cur_tqdm:
+        output = model(data)
+        labels = torch.round(output).detach().cpu().numpy().reshape(-1)
+        position_pos = position[labels==1]
+        if len(position_pos) > 0:
+            print(len(position_pos))
+            for chr_x, chr_y, x, y in position_pos.cpu().numpy():
+                detected.append((chr_x, chr_y, x, y))
+    return detected
+
 def __perform_detection(model, dataloader):
     detected = []
     cur_tqdm = tqdm(dataloader)
@@ -328,6 +334,20 @@ def __perform_detection(model, dataloader):
         y_list = position[1][labels==1]
         if len(x_list) > 0:
             for x, y in zip(x_list.numpy(), y_list.numpy()):
+                detected.append((x, y))
+    return detected
+
+def __perform_detection_async(args):
+    model = args[0]
+    dataloader  = args[1]
+    detected = []
+    cur_tqdm = tqdm(dataloader)
+    for data, position in cur_tqdm:
+        output = model(data)
+        labels = torch.round(output).detach().cpu().numpy().reshape(-1)
+        coords_list = position[labels==1]
+        if len(coords_list) > 0:
+            for x, y in coords_list.numpy():
                 detected.append((x, y))
     return detected
 
@@ -344,18 +364,66 @@ def __perform_classification(model, dataloader):
             classified.append((x_y[0], x_y[1], __index_to_label[label]))
     return classified
 
-def predict(file_path, weights_path, search_in_1k, batch_size, device):
-    local_path = os.getcwd()
+resolutions_list = (50000, 10000, 5000, 1000)
 
+def __get_chromosome_coords(coords_list, chr_names, chr_sizes, resolution):
+    additive_sizes = np.empty_like(chr_sizes)
+    curr_s = 0
+    for i, s in enumerate(chr_sizes):
+        curr_s += s
+        additive_sizes[i] = curr_s
+    result = {}
+    for coord in coords_list:
+        x_i = 0
+        while coord*resolution > additive_sizes[x_i]:
+            x_i+=1
+        x_chr = chr_names[x_i]
+        if x_i > 0:
+            x = (coord*resolution-additive_sizes[x_i-1]) // resolution
+        else:
+            x = coord
+        
+        if x_chr in result:
+            result[x_chr].append(x)
+        else:
+            result[x_chr] = [x, ]
+        
+    result_list = []
+    
+    for key, value in result.items():
+        for v in value:
+            result_list.append((key, v))
+    return result_list
+
+def __get_genome_coords(coords_list, chr_names, chr_sizes, resolution):
+    additive_sizes = {}
+    curr_s = 0
+    for i, s in zip(chr_names, chr_sizes):
+        additive_sizes[i] = curr_s
+        curr_s += s
+    result = []
+    for coord in coords_list:
+        chr_x, chr_y, x, y = coord
+        pad_x = additive_sizes[chr_names[chr_x]]
+        x_new = x*resolution+pad_x
+        pad_y = additive_sizes[chr_names[chr_y]]
+        y_new = y*resolution+pad_y
+        result.append((x_new // resolution, y_new // resolution))
+    
+    return result
+    
+
+def predict(file_path, search_in_1k, batch_size, device):
+    local_path = os.getcwd()
     #Stage 1 - 50k, diagonal detection
     print('Started Stage 1')
-    resolution_1 = 50000
+    resolution_1 = resolutions_list[0]
     image_size_1 = 48
     dataset = EvalDatasetDiag(file_path, resolution=resolution_1, image_size=image_size_1, step=image_size_1//2, device=device)
     print('Stage 1 dataset loaded')
     model = DetectModel(image_size=image_size_1, num_models=3)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_50k_48_diag.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_50k_48_diag.pt', map_location=device))
     model.eval()
 
     detected = __perform_detection(model, DataLoader(dataset, batch_size=64))
@@ -363,7 +431,7 @@ def predict(file_path, weights_path, search_in_1k, batch_size, device):
 
     #Stage 2 - 10k, diagonal detection
     print('Started Stage 2')
-    resolution_2 = 10000
+    resolution_2 = resolutions_list[1]
     image_size_2 = 48
 
     matrices_det = []
@@ -374,7 +442,7 @@ def predict(file_path, weights_path, search_in_1k, batch_size, device):
 
     model = DetectModel(image_size=image_size_2)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_10k_48_diag.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_10k_48_diag.pt', map_location=device))
     model.eval()
 
     dataset = PatchesDiagDataset(matrices_det, image_size_1, image_size_2, resolution_1, resolution_2, 12, device=device)
@@ -392,75 +460,99 @@ def predict(file_path, weights_path, search_in_1k, batch_size, device):
             coords_set.add(d[0]+(image_size_2//2))
             last_d = d[0]
     image_size_3 = 48
-    resolution_3 = 10000
-    dataset = PatchesDataset(file_path, resolution_3, image_size_3, coords_set, device=device)
-    print('Stage 3 dataset loaded')
-
+    resolution_3 = resolutions_list[1]
+    coords_list = []
+    pad = image_size_3//2
+    c = cooler.Cooler(f'{file_path}::/resolutions/{resolution_3}')
+    chr_coords = __get_chromosome_coords(coords_set, c.chromnames, c.chromsizes, resolution_3)
+    chr_name_to_ind = {}
+    i = 0
+    for chr_name in c.chromnames:
+        chr_name_to_ind[chr_name] = i
+        i+=1
+    for chr_x, x in chr_coords:
+        for chr_y, y in chr_coords:
+            if x < y or  (abs(x-y)<image_size_3 and chr_x == chr_y) : 
+                continue
+            coords_list.append(((chr_name_to_ind[chr_x], chr_name_to_ind[chr_y]), (x, y)))
+    coords_list = sorted(coords_list, key=lambda x: x[0])
+    dataset = PatchesDataset(file_path, resolution_3, image_size_3, coords_list, device=device)
+    print('Stage 3 dataset loaded', len(dataset))
+    
     model = DetectModel(image_size=image_size_3)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_10k_48_patch.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_10k_48_patch.pt', map_location=device))
     model.eval()
-    detected_3 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
-    __save_result_to_csv(local_path, detected_3, 'stage3')
 
+    detected_3 = __perform_detection_stage3(model, DataLoader(dataset, batch_size=batch_size))
+    __save_result_to_csv(local_path, detected_3, 'stage3_chrs')
+    detected_3 = __get_genome_coords(detected_3, c.chromnames, c.chromsizes, resolution_3)
+    __save_result_to_csv(local_path, detected_3, 'stage3')
     #Stage 4 - 5k, improve accuracy
     print('Started Stage 4')
     image_size_4 = 48
-    resolution_4 = 5000
+    resolution_4 = resolutions_list[2]
     dataset = ClarifyDataset(file_path, resolution_4, image_size_4, detected_3, image_size_3, resolution_3, device=device)
     print('Stage 4 dataset loaded')
     model = DetectModel(image_size=image_size_4)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_5k_48_clr.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_5k_48_clr.pt', map_location=device))
     model.eval()
 
     detected_4 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
     __save_result_to_csv(local_path, detected_4, 'stage4')
 
-    #Stage 4.5 - 5k, unite intersected detection boxes
-    print('Started Stage 4.5')
-    detected_4 = np.array(detected_4)
-    detected_4 = detected_4[np.argsort(detected_4.sum(axis=1))]
-    intersec_dist = image_size_4*np.sqrt(2)
-    def dist(d1, d2):
-        return np.sqrt(((d1[0]-d2[0])**2)+((d1[1]-d2[1])**2))
+    resolution_6 = resolutions_list[1]
+    
+    if len(detected_4) > 0:
+        #Stage 4.5 - 5k, unite intersected detection boxes
+        print('Started Stage 4.5')
+        detected_4 = np.array(detected_4)
+        detected_4 = detected_4[np.argsort(detected_4.sum(axis=1))]
+        intersec_dist = image_size_4*np.sqrt(2)
+        def dist(d1, d2):
+            return np.sqrt(((d1[0]-d2[0])**2)+((d1[1]-d2[1])**2))
 
-    i = 0
-    groups = []
-    while i < len(detected_4):
-        for j in range(i, len(detected_4)):
-            
-            if j == (len(detected_4)-1) or dist(detected_4[j], detected_4[j+1]) > intersec_dist:
-                break
-        center = (detected_4[i][0]//2 + detected_4[j][0]//2, detected_4[i][1]//2 + detected_4[j][1]//2)
-        left_up = int(min(detected_4[i][0], detected_4[j][0])-image_size_4//2), int(min(detected_4[i][1], detected_4[j][1])-image_size_4//2)
-        width = int(abs(detected_4[i][0] - detected_4[j][0]) + image_size_4)
-        height = int(abs(detected_4[i][1] - detected_4[j][1]) + image_size_4)
-        i=j+1
-        groups.append((left_up, (width, height)))
+        i = 0
+        groups = []
+        while i < len(detected_4):
+            for j in range(i, len(detected_4)):
+                
+                if j == (len(detected_4)-1) or dist(detected_4[j], detected_4[j+1]) > intersec_dist:
+                    break
+            center = (detected_4[i][0]//2 + detected_4[j][0]//2, detected_4[i][1]//2 + detected_4[j][1]//2)
+            left_up = int(min(detected_4[i][0], detected_4[j][0])-image_size_4//2), int(min(detected_4[i][1], detected_4[j][1])-image_size_4//2)
+            width = int(abs(detected_4[i][0] - detected_4[j][0]) + image_size_4)
+            height = int(abs(detected_4[i][1] - detected_4[j][1]) + image_size_4)
+            i=j+1
+            groups.append((left_up, (width, height)))
 
-    #Stage 5 - 5k, find exact SVs location
-    print('Started Stage 5')
-    image_size_5 = 24
-    dataset = ArbitraryPatchesDataset(file_path, resolution_4, groups)
-    detected_5 = []
-    dataloader = DataLoader(dataset, batch_size=1)
-    for data, position in tqdm(dataloader):
-        center = np.unravel_index(data[0].cpu().numpy().argmax(), data[0].shape)
-        dot = ((position[0].item()+center[0], position[1].item()+center[1]))
-        detected_5.append(dot)
 
-    __save_result_to_csv(local_path, detected_5, 'stage5')
+        #Stage 5 - 5k, find exact SVs location
+        print('Started Stage 5')
+        image_size_5 = 24
+        dataset = ArbitraryPatchesDataset(file_path, resolution_4, groups)
+        detected_5 = []
+        dataloader = DataLoader(dataset, batch_size=1)
+        for data, position in tqdm(dataloader):
+            center = np.unravel_index(data[0].cpu().numpy().argmax(), data[0].shape)
+            dot = ((position[0].item()+center[0], position[1].item()+center[1]))
+            detected_5.append(dot)
 
-    resolution_6 = 10000
+        __save_result_to_csv(local_path, detected_5, 'stage5')
+
+        detected_for_cls = np.array(detected_5) // (resolution_6//resolution_4)
+    else:
+        detected_for_cls = np.array(detected_3)
+
+
     image_size_6 = 24
-    detected_for_cls = np.array(detected_5) // (resolution_6//resolution_4)
     dataset = ClassificationDataset(file_path, resolution_6, image_size_5, detected_for_cls, device)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     model = ClassificationModel(in_channels=1, image_size=image_size_6, num_models=10, num_classes=3)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/artifacts/torch_ensemble_5k_24_classify.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_5k_24_classify.pt', map_location=device))
     model.eval()
     classified = __perform_classification(model, DataLoader(dataset, batch_size=batch_size))
     __save_result_to_csv(local_path, classified, 'classification')
@@ -470,7 +562,7 @@ def predict(file_path, weights_path, search_in_1k, batch_size, device):
     if search_in_1k:
         #Stage 6 - 1k, try to find location more precisely
         print('Started Stage 6')
-        resolution_7 = 1000
+        resolution_7 = resolutions_list[3]
         image_size_7 = image_size_5*(resolution_4//resolution_7)
         res_step = resolution_4 // resolution_7
         dataset = ClearPatchesDataset(file_path, resolution_7, image_size_7, detected_5, res_step)
@@ -482,7 +574,7 @@ def predict(file_path, weights_path, search_in_1k, batch_size, device):
             center_value = patch[image_size_7//2, image_size_7//2]
             if max_value-center_value > max_value//4:
                 center = np.unravel_index(patch.argmax(), patch.shape)
-                dot = ((position[0].item()+center[0], position[1].item()+center[1]))
+                dot = ((position[0].item()+center[0]+image_size_7//2, position[1].item()+center[1]+image_size_7//2))
                 detected_6.append(dot)
             else:
                 detected_6.append((position[0].item(), position[1].item()))
@@ -493,10 +585,13 @@ def predict(file_path, weights_path, search_in_1k, batch_size, device):
 
     last_detections = np.genfromtxt(f"{local_path}/{result_file_name}", delimiter=",")
     results = []
+    if len(last_detections) == 2 and not isinstance(last_detections[0], np.ndarray):
+        last_detections = [(last_detections[0], last_detections[1]), ]
     for d, cls in zip(last_detections, classified):
         if cls[2] != 'negative':
             results.append((int(d[0]*last_resolution), int(d[1]*last_resolution), cls[2]))
-    __save_result_to_csv(local_path, np.array(results), 'result')
+    
+    pd.DataFrame(np.array(results), columns=['bp_1', 'bp_2', 'label']).to_csv(f'{local_path}/result.csv', index=False)
 
     print('Detection finished! Results are in result.csv')
 
@@ -530,9 +625,9 @@ def main(cmdline=None):
         raise ValueError("--device argument should be GPU, CPU or auto")
     
     if device_arg=='auto':
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     if device_arg =='gpu':
-        device = 'cuda'
+        device = 'cuda:0'
     if device_arg =='cpu':
         device = 'cpu'
 
@@ -545,5 +640,9 @@ def main(cmdline=None):
     oblig_res = ('50000', '10000', '5000', '1000') if search_in_1k else ('50000', '10000', '5000')
     if not set(oblig_res).issubset(set(resolutions)):
         raise ValueError(".mcool file should contain 50Kb, 10Kb, 5Kb resolitions and 1kb resolution if --search_in_1k option used")
+    
+    warnings.filterwarnings("ignore")
 
+    start = time.time()
     predict(file_path, search_in_1k, batch_size, device)
+    print('Executed in {0:0.1f} seconds'.format(time.time() - start))
