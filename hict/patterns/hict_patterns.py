@@ -194,7 +194,7 @@ class PatchesDataset(Dataset):
         if chr_name!=self.current_chr:
             self.current_chr = chr_name
             self.matrix = self.cooler.matrix(balance=False).fetch(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]])
-        mat = np.log10(self.matrix[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
+        mat = np.log10(self.matrix[int(x)-int(self.image_size//2):int(x)+int(self.image_size//2), int(y)-int(self.image_size//2):int(y)+int(self.image_size//2)])
         if mat.shape[0] < self.image_size or mat.shape[1] < self.image_size:
             return torch.zeros((1, self.image_size, self.image_size), device=self.device), torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
         mat = np.nan_to_num(mat, neginf=0, posinf=0)
@@ -299,7 +299,7 @@ class ClassificationDataset(Dataset):
 
     def __getitem__(self, idx):
         x, y = self.coords_list[idx]
-        mat = np.log2(self.cooler[x-int(self.image_size//2):x+int(self.image_size//2), y-int(self.image_size//2):y+int(self.image_size//2)])
+        mat = np.log2(self.cooler[int(x)-int(self.image_size//2):int(x)+int(self.image_size//2), int(y)-int(self.image_size//2):int(y)+int(self.image_size//2)])
         mat = np.nan_to_num(mat, neginf=0, posinf=0)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
@@ -319,7 +319,6 @@ def __perform_detection_stage3(model, dataloader):
         labels = torch.round(output).detach().cpu().numpy().reshape(-1)
         position_pos = position[labels==1]
         if len(position_pos) > 0:
-            print(len(position_pos))
             for chr_x, chr_y, x, y in position_pos.cpu().numpy():
                 detected.append((chr_x, chr_y, x, y))
     return detected
@@ -367,7 +366,7 @@ def __perform_classification(model, dataloader):
 resolutions_list = (50000, 10000, 5000, 1000)
 
 def __get_chromosome_coords(coords_list, chr_names, chr_sizes, resolution):
-    additive_sizes = np.empty_like(chr_sizes)
+    additive_sizes = np.empty_like(chr_sizes, dtype=np.uint64)
     curr_s = 0
     for i, s in enumerate(chr_sizes):
         curr_s += s
@@ -404,9 +403,9 @@ def __get_genome_coords(coords_list, chr_names, chr_sizes, resolution):
     result = []
     for coord in coords_list:
         chr_x, chr_y, x, y = coord
-        pad_x = additive_sizes[chr_names[chr_x]]
+        pad_x = additive_sizes[chr_names[int(chr_x)]]
         x_new = x*resolution+pad_x
-        pad_y = additive_sizes[chr_names[chr_y]]
+        pad_y = additive_sizes[chr_names[int(chr_y)]]
         y_new = y*resolution+pad_y
         result.append((x_new // resolution, y_new // resolution))
     
@@ -477,7 +476,7 @@ def predict(file_path, search_in_1k, batch_size, device):
             coords_list.append(((chr_name_to_ind[chr_x], chr_name_to_ind[chr_y]), (x, y)))
     coords_list = sorted(coords_list, key=lambda x: x[0])
     dataset = PatchesDataset(file_path, resolution_3, image_size_3, coords_list, device=device)
-    print('Stage 3 dataset loaded', len(dataset))
+    print('Stage 3 dataset loaded')
     
     model = DetectModel(image_size=image_size_3)
     model.to(device)
@@ -485,7 +484,6 @@ def predict(file_path, search_in_1k, batch_size, device):
     model.eval()
 
     detected_3 = __perform_detection_stage3(model, DataLoader(dataset, batch_size=batch_size))
-    __save_result_to_csv(local_path, detected_3, 'stage3_chrs')
     detected_3 = __get_genome_coords(detected_3, c.chromnames, c.chromsizes, resolution_3)
     __save_result_to_csv(local_path, detected_3, 'stage3')
     #Stage 4 - 5k, improve accuracy
@@ -503,7 +501,7 @@ def predict(file_path, search_in_1k, batch_size, device):
     __save_result_to_csv(local_path, detected_4, 'stage4')
 
     resolution_6 = resolutions_list[1]
-    
+    image_size_5 = 24
     if len(detected_4) > 0:
         #Stage 4.5 - 5k, unite intersected detection boxes
         print('Started Stage 4.5')
@@ -530,7 +528,6 @@ def predict(file_path, search_in_1k, batch_size, device):
 
         #Stage 5 - 5k, find exact SVs location
         print('Started Stage 5')
-        image_size_5 = 24
         dataset = ArbitraryPatchesDataset(file_path, resolution_4, groups)
         detected_5 = []
         dataloader = DataLoader(dataset, batch_size=1)

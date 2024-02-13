@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 
 requirements: List[str] = []
-with open("requirements_gpu.txt", mode="rt", encoding="utf-8") as f:
+with open("requirements.txt", mode="rt", encoding="utf-8") as f:
     requirements = f.readlines()
 
 setup(
