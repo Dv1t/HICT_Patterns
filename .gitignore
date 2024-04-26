@@ -13,3 +13,5 @@ dist
 HiCT_venv
 .eggs
 *.pt
+/results
+/weights

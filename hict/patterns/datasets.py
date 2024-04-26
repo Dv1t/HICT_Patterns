@@ -4,50 +4,7 @@ from torch.utils.data import Dataset
 import numpy as np
 from tqdm import tqdm
 from torchvision.transforms import GaussianBlur
-import os
-import sys
 from help_functions import calculate_diag_means
-import matplotlib.pyplot as plt
-import io
-import matplotlib.colors as clr
-from PIL import Image
-from torchvision.transforms.functional import pil_to_tensor
-import torchvision.transforms as T
-
-def calculate_diag_means(matrix: np.ndarray, res = 'exp/obs') -> np.ndarray:
-        result = np.zeros_like(matrix, dtype='float64')
-        expected = np.zeros_like(matrix, dtype='float64')
-        assert (
-            matrix.shape[0] == matrix.shape[1]
-        ), "Matrix must be square"
-        if True:
-            n = matrix.shape[0]
-            expected = sum(
-                (
-                    np.diag(
-                        [np.nanmean(matrix.diagonal(offset=i))] * (n-abs(i)), k=i
-                    ) for i in range(1-n, n)
-                )
-            )
-        else:
-            expected = np.ones_like(matrix) * np.nanmean(matrix)
-
-        if res == 'exp/obs':
-            return expected/matrix
-
-        if res == 'exp':
-            return expected
-
-        if res == 'exp-obs':
-            return expected - matrix
-
-        if res == 'obs-exp':
-            return matrix - expected
-
-        if res == 'obs/exp':
-            return matrix/expected
-
-        return result
 
 
 class EvalDatasetDiag(Dataset):
@@ -143,7 +100,6 @@ class PatchesDataset(Dataset):
         mat = np.nan_to_num(mat, neginf=0, posinf=0)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
-        #tens = torch.nn.functional.normalize(tens)
 
         return tens, torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
 
@@ -157,7 +113,6 @@ class ClarifyDataset(Dataset):
         self.use_means = use_means
         c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
         self.cooler = c
-        self.clr_map = clr.LinearSegmentedColormap.from_list('yarg', ['#e6e6e6', '#000'], N=256)
 
         patches_list = []
         coords_list = []
@@ -207,16 +162,7 @@ class ClarifyDataset(Dataset):
         pad = self.image_size//2
         mat = self.matrix[x_i-pad:x_i+pad, y_j-pad:y_j+pad]
         mat = np.log10(mat)
-        #max_value = np.nanmax(mat)
-        #min_value = np.nanmin(mat)
         mat = np.nan_to_num(mat, neginf=0, posinf=0)
-        '''
-        buf = io.BytesIO()
-        plt.imsave(buf,
-            mat, cmap=self.clr_map, vmax=max_value, vmin=min_value)
-        img = Image.open(buf)
-        tens = pil_to_tensor(img).to(device=self.device, dtype=torch.float)
-        '''
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
         return tens, torch.tensor((chr_x, chr_y, x_i, y_j), device=self.device)

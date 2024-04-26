@@ -11,7 +11,7 @@ import sys
 import pandas as pd
 import warnings
 import time
-from help_functions import get_chromosome_coords, get_genome_coords
+from help_functions import get_chromosome_coords, get_genome_coords, get_chromosome_coords_double
 from models import DetectModel, ClassificationModel
 from datasets import *
 
@@ -32,18 +32,6 @@ def __perform_detection_chroms(model, dataloader, round = True, label_cutoff=0.9
         else:
             labels = output.detach().cpu().numpy().reshape(-1)
             position_pos = position[labels>=label_cutoff]
-        if len(position_pos) > 0:
-            for chr_x, chr_y, x, y in position_pos.cpu().numpy():
-                detected.append((chr_x, chr_y, x, y))
-    return detected
-
-def __perform_detection_chroms_inverted(model, dataloader):
-    detected = []
-    cur_tqdm = tqdm(dataloader)
-    for data, position in cur_tqdm:
-        output = model(data)
-        labels = torch.round(output).detach().cpu().numpy().reshape(-1)
-        position_pos = position[labels==0]
         if len(position_pos) > 0:
             for chr_x, chr_y, x, y in position_pos.cpu().numpy():
                 detected.append((chr_x, chr_y, x, y))
@@ -105,9 +93,9 @@ def __group_patches(detected, image_size):
 
 resolutions_list = (100000, 50000, 10000, 5000, 1000)
     
-def predict(file_path, search_in_1k, batch_size, device):
+def predict(file_path, search_in_1k, batch_size, device, output_filename):
     local_path = os.getcwd()
-    
+    c = cooler.Cooler(f'{file_path}::/resolutions/50000')
     #Stage 1 - 50k, diagonal detection
     print('Started Stage 1')
     resolution_1 = resolutions_list[1]
@@ -142,7 +130,7 @@ def predict(file_path, search_in_1k, batch_size, device):
     print('Stage 2 dataset loaded')
     detected_2 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
     __save_result_to_csv(local_path, detected_2, 'stage2')
-
+    
     #Stage 3 - 10k, whole map detection
     print('Started Stage 3')
     coords_set = set()
@@ -156,13 +144,13 @@ def predict(file_path, search_in_1k, batch_size, device):
     resolution_3 = resolutions_list[1]
     coords_list = []
     pad = image_size_3//2
-    c = cooler.Cooler(f'{file_path}::/resolutions/{resolution_3}')
-    chr_coords = get_chromosome_coords(coords_set, c.chromnames, c.chromsizes, resolution_3)
+    c = cooler.Cooler(f'{file_path}::/resolutions/50000')
+    chr_coords = get_chromosome_coords(coords_set, c.chromsizes, resolution_2)
     for chr_x, x in chr_coords:
         for chr_y, y in chr_coords:
             if x < y or  (abs(x-y)<image_size_3 and chr_x == chr_y) : 
                 continue
-            coords_list.append(((chr_x, chr_y), (x, y)))
+            coords_list.append(((chr_x, chr_y), (x*resolution_2//resolution_3, y*resolution_2//resolution_3)))
     coords_list = sorted(coords_list, key=lambda x: x[0])
     dataset = PatchesDataset(file_path, resolution_3, image_size_3, coords_list, device=device, use_means=True)
     print('Stage 3 dataset loaded')
@@ -173,7 +161,6 @@ def predict(file_path, search_in_1k, batch_size, device):
     model.eval()
     
     detected_3 = __perform_detection_chroms(model, DataLoader(dataset, batch_size=batch_size))
-    #detected_3 = get_genome_coords(detected_3, c.chromnames, c.chromsizes, resolution_3)
 
     __save_result_to_csv(local_path, detected_3, 'stage3')
  
@@ -185,86 +172,105 @@ def predict(file_path, search_in_1k, batch_size, device):
     print('Stage 4 dataset loaded')
     model = DetectModel(in_channels=1, image_size=image_size_4)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/weights_old/torch_ensemble_5k_48_clr.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_5k_48_patch.pt', map_location=device))
     model.eval()
 
     detected_4 = __perform_detection_chroms(model, DataLoader(dataset, batch_size=batch_size))
     detected_4 = get_genome_coords(detected_4, c.chromnames, c.chromsizes, resolution_4)
     __save_result_to_csv(local_path, detected_4, 'stage4')
 
-    resolution_6 = resolutions_list[2]
-    image_size_5 = 24
+    image_size_7 = 24
     if len(detected_4) > 0:
         #Stage 4.5 - 5k, unite intersected detection boxes
-        print('Started Stage 4.5')
-        groups = __group_patches(detected_4, image_size_4)
-        '''
+        image_size_5 = 48
+        groups = __group_patches(np.array(detected_4)//2, image_size_5)
         #Stage 5 - 5k, find exact SVs location
         print('Started Stage 5')
-        resolution_5 = resolutions_list[3]
+        resolution_5 = resolutions_list[2]
         dataset = BigPatchesDataset(file_path, resolution_5, image_size_5, groups, device)
         model = DetectModel(image_size=image_size_5)
         model.to(device)
         model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_10k_48_patch.pt', map_location=device))
         model.eval()
-        detected_5 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size), round=False, label_cutoff=0.99)
+        detected_5 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size), round=False, label_cutoff=0.95)
         __save_result_to_csv(local_path, detected_5, 'stage5')
-        '''
         
+        
+        print('Started Stage 6')
+        image_size_6 = 48
+        resolution_6 = resolutions_list[3]
+
+        detected_5.sort()
+        detected_5 = get_chromosome_coords_double(detected_5, c.chromsizes, resolution_6)
+
+        dataset = ClarifyDataset(file_path, resolution_6, image_size_6, detected_5, image_size_5, resolution_5, device=device, use_means=False)
+        print('Stage 6 dataset loaded')
+        model = DetectModel(in_channels=1, image_size=image_size_6)
+        model.to(device)
+        model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_5k_48_patch.pt', map_location=device))
+        model.eval()
+
+        detected_6 = __perform_detection_chroms(model, DataLoader(dataset, batch_size=batch_size))
+        detected_6 = get_genome_coords(detected_6, c.chromnames, c.chromsizes, resolution_6)
+        __save_result_to_csv(local_path, detected_6, 'stage6')
+
+
         #Stage 5 - 5k, find exact SVs location
-        print('Started Stage 5')
+        print('Started Stage 7')
 
-        resolution_5 = resolutions_list[3]
+        resolution_7 = resolutions_list[3]
+        groups = __group_patches(detected_6, image_size_7)
 
-        dataset = ArbitraryPatchesDataset(file_path, resolution_5, groups)
-        detected_5 = []
+        dataset = ArbitraryPatchesDataset(file_path, resolution_7, groups)
+        detected_7 = []
         dataloader = DataLoader(dataset, batch_size=1)
         for data, position in tqdm(dataloader):
             center = np.unravel_index(data[0].cpu().numpy().argmax(), data[0].shape)
             dot = ((position[0].item()+center[0], position[1].item()+center[1]))
-            detected_5.append(dot)
-        __save_result_to_csv(local_path, detected_5, 'stage5')
-        detected_for_cls = np.array(detected_5) 
+            detected_7.append(dot)
+        __save_result_to_csv(local_path, detected_7, 'stage7')
+        detected_for_cls = np.array(detected_7) 
     else:
         detected_for_cls = np.array(detected_3)
 
-
-    image_size_6 = 24
-    dataset = ClassificationDataset(file_path, resolution_6, image_size_6, detected_for_cls // (resolution_6//resolution_4), device)
+    print('Started Stage 8 - Classification')
+    image_size_8 = 24
+    resolution_8 = resolutions_list[2]
+    dataset = ClassificationDataset(file_path, resolution_8, image_size_8, detected_for_cls // (resolution_8//resolution_4), device)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    model = ClassificationModel(in_channels=1, image_size=image_size_6, num_models=10, num_classes=5)
+    model = ClassificationModel(in_channels=1, image_size=image_size_8, num_models=10, num_classes=5)
     model.to(device)
     model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_10k_24_classify.pt', map_location=device))
     model.eval()
     classified = __perform_classification(model, DataLoader(dataset, batch_size=batch_size))
     __save_result_to_csv(local_path, classified, 'classification')
 
-    result_file_name = 'stage5.csv'
-    last_resolution = resolution_5
+    result_file_name = 'stage7.csv'
+    last_resolution = resolution_7
     if search_in_1k:
         #Stage 6 - 1k, try to find location more precisely
-        print('Started Stage 6')
-        resolution_7 = resolutions_list[4]
-        image_size_7 = image_size_5*(last_resolution//resolution_7)
-        res_step = last_resolution // resolution_7
-        dataset = ClearPatchesDataset(file_path, resolution_7, image_size_7, detected_for_cls, res_step)
+        print('Started Stage 9')
+        resolution_9 = resolutions_list[4]
+        image_size_9 = image_size_7*(last_resolution//resolution_9)
+        res_step = last_resolution // resolution_9
+        dataset = ClearPatchesDataset(file_path, resolution_9, image_size_9, detected_for_cls, res_step)
         dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-        detected_6 = []
+        detected_9 = []
         for data, position in tqdm(dataloader):
             patch = data[0].cpu().numpy()
             max_value = np.nanmax(patch)
-            center_value = patch[image_size_7//2, image_size_7//2]
+            center_value = patch[image_size_9//2, image_size_9//2]
             if max_value-center_value > max_value//4:
                 center = np.unravel_index(patch.argmax(), patch.shape)
-                dot = ((position[0].item()+center[0]-image_size_7//2, position[1].item()+center[1]-image_size_7//2))
-                detected_6.append(dot)
+                dot = ((position[0].item()+center[0]-image_size_9//2, position[1].item()+center[1]-image_size_9//2))
+                detected_9.append(dot)
             else:
-                detected_6.append((position[0].item(), position[1].item()))
+                detected_9.append((position[0].item(), position[1].item()))
 
-        __save_result_to_csv(local_path, detected_6, 'stage6')
-        result_file_name = 'stage6.csv'
-        last_resolution = resolution_7
+        __save_result_to_csv(local_path, detected_9, 'stage9')
+        result_file_name = 'stage9.csv'
+        last_resolution = resolution_9
 
     last_detections = np.genfromtxt(f"{local_path}/{result_file_name}", delimiter=",")
     results = []
@@ -274,9 +280,9 @@ def predict(file_path, search_in_1k, batch_size, device):
         #if cls[2] != 'negative':
         results.append((int(d[0]*last_resolution), int(d[1]*last_resolution), cls[2]))
     
-    pd.DataFrame(np.array(results), columns=['bp_1', 'bp_2', 'label']).to_csv(f'{local_path}/result.csv', index=False)
+    pd.DataFrame(np.array(results), columns=['bp_1', 'bp_2', 'label']).to_csv(f'{local_path}/{output_filename}.csv', index=False)
 
-    print('Detection finished! Results are in result.csv')
+    print(f'Detection finished! Results are in {output_filename}.csv')
 
 
 def main(cmdline=None):
@@ -289,14 +295,18 @@ def main(cmdline=None):
     parser.add_argument("--search_in_1k", action=argparse.BooleanOptionalAction, help="Provide if want to perform detection on 1Kb resolution")
     parser.add_argument('-B', '--batch_size', required=False, type=int, help="Size of data batch processed simultaneously, larger size reduces time of work but requires more RAM and VRAM")
     parser.add_argument('--device', required=False, type=str, help="Which device use for CNN inference. Possible options are: GPU, CPU and auto. auto option will use GPU if it's possible")
+    parser.add_argument('--output', '-O', required=False, type=str, help="Output file name, default is 'result'")
+
     parser.set_defaults(search_in_1k=False)
     parser.set_defaults(batch_size=512)
     parser.set_defaults(device='AUTO')
+    parser.set_defaults(output='result')
 
     args = parser.parse_args(cmdline)
     file_path = args.file_path
     search_in_1k = args.search_in_1k
     batch_size = args.batch_size
+    output_name = args.output
 
     if not '.mcool' in file_path:
         raise ValueError("input file should be .mcool")
@@ -322,12 +332,12 @@ def main(cmdline=None):
             resolutions.append(value.name[13:])
     oblig_res = ('50000', '10000', '5000', '1000') if search_in_1k else ('50000', '10000', '5000')
     if not set(oblig_res).issubset(set(resolutions)):
-        raise ValueError(".mcool file should contain 50Kb, 10Kb, 5Kb resolitions and 1kb resolution if --search_in_1k option used")
+        raise ValueError(".mcool file should contain 50Kb, 10Kb, 5Kb resolutions and 1kb resolution if --search_in_1k option used")
     
     warnings.filterwarnings("ignore")
 
     start = time.time()
-    predict(file_path, search_in_1k, batch_size, device)
+    predict(file_path, search_in_1k, batch_size, device, output_name)
     print('Executed in {0:0.1f} seconds'.format(time.time() - start))
 
 

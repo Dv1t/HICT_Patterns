@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 
-def get_chromosome_coords(coords_list, chr_names, chr_sizes, resolution):
+def get_chromosome_coords(coords_list, chr_sizes, resolution):
     additive_sizes = np.empty_like(chr_sizes, dtype=np.uint64)
     curr_s = 0
     for i, s in enumerate(chr_sizes):
@@ -17,7 +17,7 @@ def get_chromosome_coords(coords_list, chr_names, chr_sizes, resolution):
                 break
         if x_i >= len(additive_sizes):
             continue
-        x_chr = x_i#chr_names[x_i]
+        x_chr = x_i
         if x_i > 0:
             x = (coord*resolution-additive_sizes[x_i-1]) // resolution
         else:
@@ -33,6 +33,53 @@ def get_chromosome_coords(coords_list, chr_names, chr_sizes, resolution):
     for key, value in result.items():
         for v in value:
             result_list.append((key, int(v)))
+    return result_list
+
+def get_chromosome_coords_double(coords_list, chr_sizes, resolution):
+    additive_sizes = np.empty_like(chr_sizes, dtype=np.uint64)
+    curr_s = 0
+    for i, s in enumerate(chr_sizes):
+        curr_s += s
+        additive_sizes[i] = curr_s
+    result = {}
+    for coord_x, coord_y in coords_list:
+        x_i = 0
+        while coord_x*resolution > additive_sizes[x_i]:
+            x_i+=1
+            if x_i >= len(additive_sizes):
+                break
+        if x_i >= len(additive_sizes):
+            continue
+        x_chr = x_i
+        if x_i > 0:
+            x = (coord_x*resolution-additive_sizes[x_i-1]) // resolution
+        else:
+            x = coord_x
+
+        y_i = 0
+        while coord_y*resolution > additive_sizes[y_i]:
+            y_i+=1
+            if y_i >= len(additive_sizes):
+                break
+        if y_i >= len(additive_sizes):
+            continue
+        y_chr = y_i
+        if y_i > 0:
+            y = (coord_y*resolution-additive_sizes[y_i-1]) // resolution
+        else:
+            y = coord_y
+
+        
+        if (x_chr, y_chr) in result:
+            result[(x_chr, y_chr)].append((x, y))
+        else:
+            result[(x_chr, y_chr)] = [(x, y), ]
+        
+    result_list = []
+    
+    for key, value in result.items():
+        for v in value:
+            result_list.append((key[0],key[1], int(v[0]), int(v[1])))
     return result_list
 
 
