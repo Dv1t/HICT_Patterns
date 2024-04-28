@@ -2,16 +2,19 @@ import argparse
 import sys
 from typing import Callable, Dict
 from hict.patterns import hict_patterns
+from hict.patterns import visualize_sv
+
 
 commands_entrypoints: Dict[str, Callable] = {
-    'pattern_search': hict_patterns.main
+    'pattern_search': hict_patterns.main,
+    'visualize_sv': visualize_sv.main
 }
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="HiCT utilities package", prefix_chars="-+",
-        epilog="Visit https://github.com/ctlab/HiCT for more info."
+        epilog="Visit https://github.com/Dv1t/HICT_Patterns for more info."
     )
     parser.add_argument(
         "tool",

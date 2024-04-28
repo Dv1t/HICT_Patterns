@@ -73,7 +73,7 @@ class PatchesDataset(Dataset):
         self.cooler = c
         self.coords_list = coords_list
         self.current_chr = coords_list[0][0]
-        if use_means:
+        if use_means and self.current_chr[0] == self.current_chr[1]:
             self.matrix = calculate_diag_means(c.matrix(balance=False).fetch(c.chromnames[self.current_chr[0]], c.chromnames[self.current_chr[1]]))
         else:
             self.matrix = c.matrix(balance=False).fetch(c.chromnames[self.current_chr[0]], c.chromnames[self.current_chr[1]])

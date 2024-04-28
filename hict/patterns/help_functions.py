@@ -109,7 +109,7 @@ def get_genome_coords_single(coords_list, chr_names, chr_sizes, resolution):
     result = []
     for coord in coords_list:
         chr_x, x = coord
-        pad_x = additive_sizes[chr_x]
+        pad_x = additive_sizes[str(chr_x)]
         x_new = x*resolution+pad_x
         result.append((x_new // resolution))
     
