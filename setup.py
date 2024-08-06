@@ -20,7 +20,7 @@ setup(
         'wheel>=0.42.0',
     ],
     entry_points={
-        'console_scripts': ['hict_patterns=hict.patterns.hict_patterns:main', 'hict=hict.entrypoint:main'],
+        'console_scripts': ['hict_patterns=hict.patterns.hict_patterns:main', 'visualize_sv=hict.patterns.visualize_sv:main', 'hict=hict.entrypoint:main'],
     },
     install_requires=list(set([]).union(requirements)),
 )

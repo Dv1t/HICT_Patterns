@@ -5,7 +5,11 @@ import numpy as np
 from tqdm import tqdm
 from torchvision.transforms import GaussianBlur
 from help_functions import calculate_diag_means
-
+from torch.nn.functional import normalize
+from PIL import Image
+from torchvision.transforms.functional import pil_to_tensor
+import matplotlib.pyplot as plt
+import io
 
 class EvalDatasetDiag(Dataset):
     def __init__(self, cooler_path, resolution, image_size, step, device):
@@ -18,7 +22,6 @@ class EvalDatasetDiag(Dataset):
         self.cooler = c        
         all_chr_len = int(np.sum(c.chromsizes.values, dtype=object))
         self.amount_steps = int((all_chr_len//resolution) // (step))
-
 
     def __len__(self):
         return self.amount_steps
@@ -34,8 +37,8 @@ class EvalDatasetDiag(Dataset):
                 x-=mv
                 y-=mv
             mat = self.cooler.matrix(balance=False)[x:x+self.image_size, y:y+self.image_size]
-        mat = np.log10(mat)
-        mat = np.nan_to_num(mat, neginf=0, posinf=0)
+        #mat = np.log10(mat/self.max_value)
+        mat = np.nan_to_num(np.log10(mat), neginf=0, posinf=0)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
         return tens, (x, y)
@@ -57,7 +60,7 @@ class PatchesDiagDataset(Dataset):
     def __len__(self):
         return len(self.patches_coords_list)
     def __getitem__(self, idx):
-        mat = np.nan_to_num(self.patches_coords_list[idx][0], neginf=0, posinf=0)
+        mat = np.nan_to_num(np.log10(self.patches_coords_list[idx][0]), neginf=0, posinf=0)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
         return tens, (self.patches_coords_list[idx][1], self.patches_coords_list[idx][1])
@@ -94,13 +97,12 @@ class PatchesDataset(Dataset):
             else: 
                 self.matrix = self.cooler.matrix(balance=False).fetch(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]])
 
-        mat = np.log10(self.matrix[int(x)-int(self.image_size//2):int(x)+int(self.image_size//2), int(y)-int(self.image_size//2):int(y)+int(self.image_size//2)])
+        mat = (self.matrix[int(x)-int(self.image_size//2):int(x)+int(self.image_size//2), int(y)-int(self.image_size//2):int(y)+int(self.image_size//2)])
         if mat.shape[0] < self.image_size or mat.shape[1] < self.image_size:
             return torch.zeros((1, self.image_size, self.image_size), device=self.device), torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
-        mat = np.nan_to_num(mat, neginf=0, posinf=0)
+        mat = np.nan_to_num(np.log10(mat), neginf=0, posinf=0)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
-
         return tens, torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
 
 
@@ -124,7 +126,7 @@ class ClarifyDataset(Dataset):
         else:
             self.matrix = c.matrix(balance=False).fetch(c.chromnames[self.current_chr[0]], c.chromnames[self.current_chr[1]])
         coords_set = set()
-        step = patch_size//((patch_size*patch_resolution)//(image_size*resolution))
+        #step = patch_size//((patch_size*patch_resolution)//(image_size*resolution))
         for chr_x, chr_y, x, y in tqdm(coords):
             for i in range(0, patch_size, step):
                 for j in range(0, patch_size, step):

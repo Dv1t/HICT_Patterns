@@ -27,8 +27,8 @@ def visualize_all(file_path, resolution, result_file_name, image_size):
     matrix = c.matrix(balance=False)
 
     results = pd.read_csv(result_file_name)
-    results.bp_1_res = results.bp_1//resolution
-    results.bp_2_res = results.bp_2//resolution
+    results['bp_1_res'] = results.bp_1//resolution
+    results['bp_2_res'] = results.bp_2//resolution
     pad = image_size // 2
     for _, row in results.iterrows():
         mat = np.log2(matrix[row.bp_1_res-pad:row.bp_1_res+pad, row.bp_2_res-pad:row.bp_2_res+pad]+1)

@@ -15,3 +15,4 @@ HiCT_venv
 *.pt
 /results
 /weights
+/hict_patterns.egg-info

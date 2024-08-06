@@ -131,7 +131,7 @@ def calculate_diag_means(matrix: np.ndarray, res = 'exp/obs') -> np.ndarray:
                     torch.full((n-abs(i), ), torch.nanmean(torch.tensor(matrix.diagonal(offset=i), device='cuda', dtype=torch.float))), diagonal=i
                 ) for i in range(1-n, n)
             )
-        )
+        ).numpy(force=True)
         else:
             expected = sum(
                 (

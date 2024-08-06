@@ -97,6 +97,7 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
     local_path = os.getcwd()
     c = cooler.Cooler(f'{file_path}::/resolutions/50000')
     #Stage 1 - 50k, diagonal detection
+
     print('Started Stage 1')
     resolution_1 = resolutions_list[1]
     image_size_1 = 48
@@ -118,7 +119,7 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
     matrices_det = []
     c = cooler.Cooler(f'{file_path}::/resolutions/{resolution_2}').matrix(balance=False)
     for d in detected:
-        mat = np.log10(c[d[0]:min(d[0]+int(image_size_1*5), c.shape[0]), d[1]:min(d[1]+int(image_size_1*5), c.shape[1])])
+        mat = (c[d[0]:min(d[0]+int(image_size_1*5), c.shape[0]), d[1]:min(d[1]+int(image_size_1*5), c.shape[1])])
         matrices_det.append((mat, d[0]))
 
     model = DetectModel(image_size=image_size_2)
@@ -134,9 +135,9 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
     #Stage 3 - 10k, whole map detection
     print('Started Stage 3')
     coords_set = set()
-    detected_2.sort()
+    detected.sort()
     last_d = -(image_size_2+1)
-    for d in detected_2:
+    for d in detected:
         if d[0]-image_size_2//2 > last_d:
             coords_set.add(d[0]+(image_size_2//2))
             last_d = d[0]
@@ -145,12 +146,12 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
     coords_list = []
     pad = image_size_3//2
     c = cooler.Cooler(f'{file_path}::/resolutions/50000')
-    chr_coords = get_chromosome_coords(coords_set, c.chromsizes, resolution_2)
+    chr_coords = get_chromosome_coords(coords_set, c.chromsizes, resolution_1)
     for chr_x, x in chr_coords:
         for chr_y, y in chr_coords:
             if x < y or  (abs(x-y)<image_size_3 and chr_x == chr_y) : 
                 continue
-            coords_list.append(((chr_x, chr_y), (x*resolution_2//resolution_3, y*resolution_2//resolution_3)))
+            coords_list.append(((chr_x, chr_y), (x*resolution_1//resolution_3, y*resolution_1//resolution_3)))
     coords_list = sorted(coords_list, key=lambda x: x[0])
     dataset = PatchesDataset(file_path, resolution_3, image_size_3, coords_list, device=device, use_means=True)
     print('Stage 3 dataset loaded')
@@ -163,7 +164,7 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
     detected_3 = __perform_detection_chroms(model, DataLoader(dataset, batch_size=batch_size))
 
     __save_result_to_csv(local_path, detected_3, 'stage3')
- 
+
     print('Started Stage 4')
     image_size_4 = 48
     resolution_4 = resolutions_list[3]
@@ -201,8 +202,8 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
         resolution_6 = resolutions_list[3]
 
         detected_5.sort()
-        detected_5 = get_chromosome_coords_double(detected_5, c.chromsizes, resolution_6)
-
+        detected_5 = get_chromosome_coords_double(detected_5, c.chromsizes, resolution_5)
+        print(detected_5)
         dataset = ClarifyDataset(file_path, resolution_6, image_size_6, detected_5, image_size_5, resolution_5, device=device, use_means=False)
         print('Stage 6 dataset loaded')
         model = DetectModel(in_channels=1, image_size=image_size_6)
@@ -211,6 +212,7 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
         model.eval()
 
         detected_6 = __perform_detection_chroms(model, DataLoader(dataset, batch_size=batch_size))
+        print(detected_6)
         detected_6 = get_genome_coords(detected_6, c.chromnames, c.chromsizes, resolution_6)
         __save_result_to_csv(local_path, detected_6, 'stage6')
 
