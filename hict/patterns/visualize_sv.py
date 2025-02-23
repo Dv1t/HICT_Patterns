@@ -22,6 +22,7 @@ def visualize_chromosomewise(file_path, resolution, chr_name, chr_name_second, r
     plt.scatter(bp_1, bp_2, s=1, c='#E9967A')
     plt.savefig(f'{image_file_name}.png', dpi=500)
 
+
 def visualize_all(file_path, resolution, result_file_name, image_size):
     c = cooler.Cooler(f'{file_path}::/resolutions/{resolution}')
     matrix = c.matrix(balance=False)
@@ -53,6 +54,7 @@ def main(cmdline=None):
 
     parser.set_defaults(output='result')
     parser.set_defaults(chr_second='')
+
     parser.set_defaults(image_size=50)
 
     args = parser.parse_args(cmdline)
@@ -76,3 +78,4 @@ def main(cmdline=None):
 
 if __name__ == '__main__':
     main()
+

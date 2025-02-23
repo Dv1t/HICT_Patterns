@@ -93,23 +93,23 @@ def __group_patches(detected, image_size):
 
 resolutions_list = (100000, 50000, 10000, 5000, 1000)
     
-def predict(file_path, search_in_1k, batch_size, device, output_filename):
+def predict(file_path, clean_file_path, search_in_1k, batch_size, device, output_filename):
     local_path = os.getcwd()
     c = cooler.Cooler(f'{file_path}::/resolutions/50000')
     #Stage 1 - 50k, diagonal detection
     print('Started Stage 1')
-    resolution_1 = resolutions_list[1]
+    resolution_1 = resolutions_list[2]
     image_size_1 = 48
-    dataset = EvalDatasetDiag(file_path, resolution=resolution_1, image_size=image_size_1, step=image_size_1//2, device=device)
+    dataset = EvalDatasetDiag(file_path, clean_file_path, resolution=resolution_1, image_size=image_size_1, step=image_size_1//2, device=device)
     print('Stage 1 dataset loaded')
-    model = DetectModel(image_size=image_size_1, num_models=3)
+    model = DetectModel(image_size=image_size_1, num_models=10)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_50k_48_diag.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights_log_change/torch_ensemble_10k_48_diag.pt', map_location=device))
     model.eval()
 
     detected = __perform_detection(model, DataLoader(dataset, batch_size=64))
     __save_result_to_csv(local_path, detected, 'stage1')
-
+    '''
     #Stage 2 - 10k, diagonal detection
     print('Started Stage 2')
     resolution_2 = resolutions_list[2]
@@ -125,45 +125,46 @@ def predict(file_path, search_in_1k, batch_size, device, output_filename):
     model.to(device)
     model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_10k_48_diag.pt', map_location=device))
     model.eval()
-
+    
     dataset = PatchesDiagDataset(matrices_det, image_size_1, image_size_2, resolution_1, resolution_2, 12, device=device)
     print('Stage 2 dataset loaded')
     detected_2 = __perform_detection(model, DataLoader(dataset, batch_size=batch_size))
     __save_result_to_csv(local_path, detected_2, 'stage2')
-    
+    '''
+    detected = np.genfromtxt(f"{local_path}/stage1.csv", delimiter=",")
     #Stage 3 - 10k, whole map detection
     print('Started Stage 3')
     coords_set = set()
-    detected_2.sort()
-    last_d = -(image_size_2+1)
-    for d in detected_2:
-        if d[0]-image_size_2//2 > last_d:
-            coords_set.add(d[0]+(image_size_2//2))
+    detected.sort()
+    last_d = -(image_size_1+1)
+    for d in detected:
+        if d[0]-image_size_1//2 > last_d:
+            coords_set.add(d[0])
             last_d = d[0]
     image_size_3 = 48
     resolution_3 = resolutions_list[1]
     coords_list = []
     pad = image_size_3//2
-    c = cooler.Cooler(f'{file_path}::/resolutions/50000')
-    chr_coords = get_chromosome_coords(coords_set, c.chromsizes, resolution_2)
+    c = cooler.Cooler(f'{file_path}::/resolutions/{resolution_3}')
+    chr_coords = get_chromosome_coords(coords_set, c.chromsizes, resolution_1)
     for chr_x, x in chr_coords:
         for chr_y, y in chr_coords:
             if x < y or  (abs(x-y)<image_size_3 and chr_x == chr_y) : 
                 continue
-            coords_list.append(((chr_x, chr_y), (x*resolution_2//resolution_3, y*resolution_2//resolution_3)))
+            coords_list.append(((chr_x, chr_y), (x*resolution_1//resolution_3, y*resolution_1//resolution_3)))
     coords_list = sorted(coords_list, key=lambda x: x[0])
-    dataset = PatchesDataset(file_path, resolution_3, image_size_3, coords_list, device=device, use_means=True)
+    dataset = PatchesDataset(file_path, clean_file_path, resolution_3, image_size_3, coords_list, device=device)
     print('Stage 3 dataset loaded')
     
     model = DetectModel(image_size=image_size_3)
     model.to(device)
-    model.load_state_dict(torch.load(f'{local_path}/weights/torch_ensemble_50k_48_patch.pt', map_location=device))
+    model.load_state_dict(torch.load(f'{local_path}/weights_log_change/torch_ensemble_10k_48_patch.pt', map_location=device))
     model.eval()
     
     detected_3 = __perform_detection_chroms(model, DataLoader(dataset, batch_size=batch_size))
 
     __save_result_to_csv(local_path, detected_3, 'stage3')
- 
+    exit()
     print('Started Stage 4')
     image_size_4 = 48
     resolution_4 = resolutions_list[3]
@@ -292,6 +293,8 @@ def main(cmdline=None):
         description='This utilite find coordinates of structural variations breakpoints in Hi-C data')
     parser.add_argument('file_path', type=str, help=
                         "Path to HiC file - .mcool format, should have 50Kb, 10Kb, 5Kb resolitions and 1kb resolution if --search_in_1k option used")
+    parser.add_argument('clean_file_path', type=str, help=
+                    "Path to HiC file without rearrangements- .mcool format, should have 50Kb, 10Kb, 5Kb resolitions and 1kb resolution if --search_in_1k option used")
     parser.add_argument("--search_in_1k", action=argparse.BooleanOptionalAction, help="Provide if want to perform detection on 1Kb resolution")
     parser.add_argument('-B', '--batch_size', required=False, type=int, help="Size of data batch processed simultaneously, larger size reduces time of work but requires more RAM and VRAM")
     parser.add_argument('--device', required=False, type=str, help="Which device use for CNN inference. Possible options are: GPU, CPU and auto. auto option will use GPU if it's possible")
@@ -304,15 +307,19 @@ def main(cmdline=None):
 
     args = parser.parse_args(cmdline)
     file_path = args.file_path
+    clean_file_path = args.clean_file_path
     search_in_1k = args.search_in_1k
     batch_size = args.batch_size
     output_name = args.output
 
     if not '.mcool' in file_path:
         raise ValueError("input file should be .mcool")
-    
+    if not '.mcool' in clean_file_path:
+        raise ValueError("input file should be .mcool")
     if not os.path.isabs(file_path):
             file_path = pathlib.Path(os.getcwd()) / pathlib.Path(file_path)
+    if not os.path.isabs(clean_file_path):
+        clean_file_path = pathlib.Path(os.getcwd()) / pathlib.Path(clean_file_path)
     device_arg = args.device.lower()
     if not device_arg in ('auto', 'gpu', 'cpu'):
         raise ValueError("--device argument should be GPU, CPU or auto")
@@ -337,7 +344,7 @@ def main(cmdline=None):
     warnings.filterwarnings("ignore")
 
     start = time.time()
-    predict(file_path, search_in_1k, batch_size, device, output_name)
+    predict(file_path, clean_file_path, search_in_1k, batch_size, device, output_name)
     print('Executed in {0:0.1f} seconds'.format(time.time() - start))
 
 

@@ -8,36 +8,56 @@ from help_functions import calculate_diag_means
 
 
 class EvalDatasetDiag(Dataset):
-    def __init__(self, cooler_path, resolution, image_size, step, device):
+    def __init__(self, cooler_path, clean_cooler_path, resolution, image_size, step, device):
         self.blur = GaussianBlur(kernel_size=3, sigma=1)
         self.resolution = resolution
         self.image_size = image_size
         self.step = step
         self.device = device
         c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
-        self.cooler = c        
+        self.cooler = c
+        self.clean_cooler = cooler.Cooler(f'{clean_cooler_path}::/resolutions/{resolution}')        
         all_chr_len = int(np.sum(c.chromsizes.values, dtype=object))
         self.amount_steps = int((all_chr_len//resolution) // (step))
 
 
     def __len__(self):
         return self.amount_steps
+    
+    def __get_matrix(self, x, y):
+            matrix = self.cooler.matrix(balance=False)[x:x+self.image_size, y:y+self.image_size]
+            matrix_clean = self.clean_cooler.matrix(balance=False)[x:x+self.image_size, y:y+self.image_size]
 
+            nan_mask = np.isnan(matrix)
+            zero_mask = np.zeros_like(matrix, dtype=bool)
+            zero_mask[matrix==0] = True
+
+            nan_mask_clean = np.isnan(matrix_clean)
+            zero_mask_clean = np.zeros_like(matrix_clean, dtype=bool)
+            zero_mask_clean[matrix_clean==0] = True
+
+            mat = np.log10(matrix) - np.log10(matrix_clean)
+            mat+=1e-6
+            mat[nan_mask] = 0
+            mat[zero_mask] = 0
+            mat[nan_mask_clean] = 0
+            mat[zero_mask_clean] = 0
+            mat = 2.*(mat - np.min(mat))/np.ptp(mat)-1
+            return mat
+    
     def __getitem__(self, idx):
         x, y = idx*self.step, idx*self.step
         try:
-            mat = self.cooler.matrix(balance=False)[x:x+self.image_size, y:y+self.image_size]
+            mat = self.__get_matrix(x, y)
         except ValueError:
             mat_size = sum(self.cooler.chromsizes)//self.resolution
             if x+self.image_size > mat_size or y + self.image_size > mat_size:
                 mv = max(x+self.image_size-mat_size, y+self.image_size-mat_size)
                 x-=mv
                 y-=mv
-            mat = self.cooler.matrix(balance=False)[x:x+self.image_size, y:y+self.image_size]
-        mat = np.log10(mat)
-        mat = np.nan_to_num(mat, neginf=0, posinf=0)
+            mat = self.__get_matrix(x, y)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
-        tens = self.blur(tens)
+        #tens = self.blur(tens)
         return tens, (x, y)
 
 class PatchesDiagDataset(Dataset):
@@ -63,14 +83,37 @@ class PatchesDiagDataset(Dataset):
         return tens, (self.patches_coords_list[idx][1], self.patches_coords_list[idx][1])
 
 class PatchesDataset(Dataset):
-    def __init__(self, cooler_path, resolution, image_size, coords_list, device, use_means = False):
+
+    def __get_matrix(self, chr1, chr2):
+            matrix = self.cooler.matrix(balance=False).fetch(chr1, chr2)
+            matrix_clean = self.clean_cooler.matrix(balance=False).fetch(chr1, chr2)
+
+            nan_mask = np.isnan(matrix)
+            zero_mask = np.zeros_like(matrix, dtype=bool)
+            zero_mask[matrix==0] = True
+
+            nan_mask_clean = np.isnan(matrix_clean)
+            zero_mask_clean = np.zeros_like(matrix_clean, dtype=bool)
+            zero_mask_clean[matrix_clean==0] = True
+
+            mat = np.log10(matrix) - np.log10(matrix_clean)
+            mat+=1e-6
+            mat[nan_mask] = 0
+            mat[zero_mask] = 0
+            mat[nan_mask_clean] = 0
+            mat[zero_mask_clean] = 0
+            mat = 2.*(mat - np.min(mat))/np.ptp(mat)-1
+            return mat
+
+
+    def __init__(self, cooler_path, clean_cooler_path, resolution, image_size, coords_list, device):
         self.resolution = resolution
         self.image_size = image_size
         self.blur = GaussianBlur(kernel_size=3, sigma=1)
         self.device = device
-        self.use_means = use_means
         c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
         self.cooler = c
+        self.clean_cooler = cooler.Cooler(f'{clean_cooler_path}::/resolutions/{resolution}')        
         self.coords_list = coords_list
         self.current_chr = coords_list[0][0]
         if use_means and self.current_chr[0] == self.current_chr[1]:
@@ -86,18 +129,12 @@ class PatchesDataset(Dataset):
         y = x_y[1]
         if chr_name!=self.current_chr:
             self.current_chr = chr_name
-            if self.current_chr[0] == self.current_chr[1]:
-                if self.use_means:
-                    self.matrix = calculate_diag_means(self.cooler.matrix(balance=False).fetch(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]]))
-                else:
-                    self.matrix = self.cooler.matrix(balance=False).fetch(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]])
-            else: 
-                self.matrix = self.cooler.matrix(balance=False).fetch(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]])
+            self.matrix = self.__get_matrix(self.cooler.chromnames[self.current_chr[0]], self.cooler.chromnames[self.current_chr[1]])
 
-        mat = np.log10(self.matrix[int(x)-int(self.image_size//2):int(x)+int(self.image_size//2), int(y)-int(self.image_size//2):int(y)+int(self.image_size//2)])
+        mat = self.matrix[int(x)-int(self.image_size//2):int(x)+int(self.image_size//2), int(y)-int(self.image_size//2):int(y)+int(self.image_size//2)]
         if mat.shape[0] < self.image_size or mat.shape[1] < self.image_size:
             return torch.zeros((1, self.image_size, self.image_size), device=self.device), torch.tensor((chr_name[0], chr_name[1], x, y), device=self.device)
-        mat = np.nan_to_num(mat, neginf=0, posinf=0)
+        mat = np.nan_to_num(mat)
         tens = torch.from_numpy(mat).reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
         tens = self.blur(tens)
 
