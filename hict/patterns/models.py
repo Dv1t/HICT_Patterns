@@ -11,7 +11,7 @@ class DetectBlock(nn.Module):
                 #image_size x image_size x 1
                 nn.Conv2d(in_channels, 3,  kernel_size = 3, padding=1),
                 #image_size x image_size x 3
-                nn.BatchNorm2d(3),
+                nn.LayerNorm(3),
                 nn.ReLU(inplace=True),
                 nn.MaxPool2d(kernel_size=2, stride=2),
                 nn.Conv2d(3, 8,  kernel_size = 3, padding=1),
@@ -102,7 +102,6 @@ class ClassificationModel(nn.Module):
             nn.Dropout(0.1),
             nn.ReLU(),
             nn.Linear(256, num_classes),
-            nn.Softmax()
         )
         
     def forward(self, x):
