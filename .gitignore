@@ -15,3 +15,6 @@ HiCT_venv
 *.pt
 /results
 /weights
+.Rproj.user
+*.tsv
+/logs

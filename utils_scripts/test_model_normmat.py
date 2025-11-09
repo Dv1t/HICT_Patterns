@@ -30,7 +30,7 @@ batch_size = 512
 warnings.filterwarnings('ignore')
 
 class TrainDatasetDiagonal(Dataset):
-    def __init__(self, cooler_path_list, trans_csv_path_list, resolution, image_size, clean_cooler_list, normmat_path, detection=True, blur=True):
+    def __init__(self, cooler_path_list, trans_csv_path_list, resolution, image_size, clean_cooler_list, normmat_path, normmat_clean_path, detection=True, blur=True):
         sv_count = 0
         self.label_to_index = {'++':torch.tensor([0.0, 0.0, 0.0, 0.0, 1.0]),
                                '+-':torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0]),
@@ -43,10 +43,15 @@ class TrainDatasetDiagonal(Dataset):
         if blur:
             self.blur = GaussianBlur(kernel_size=3, sigma=1)
         self.use_blur = blur
-        normmat_bydist = np.exp(np.load(normmat_path))[:48]
-        normmat = normmat_bydist[np.abs(np.arange(48)[:, None] - np.arange(48)[None, :])]
-        self.normmat250 = np.reshape(normmat, (48, 1, 48, 1)).mean(axis=1).mean(axis=2)
+        normmat_bydist = np.exp(np.load(normmat_path))[:image_size*1]
+        normmat = normmat_bydist[np.abs(np.arange(image_size*1)[:, None] - np.arange(image_size*1)[None, :])]
+        self.normmat250 = np.reshape(normmat, (image_size, 1, image_size, 1)).mean(axis=1).mean(axis=2)
         self.eps = np.min(self.normmat250)
+
+        normmat_bydist = np.exp(np.load(normmat_clean_path))[:image_size*1]
+        normmat = normmat_bydist[np.abs(np.arange(image_size*1)[:, None] - np.arange(image_size*1)[None, :])]
+        self.normmat250_clean = np.reshape(normmat, (image_size, 1, image_size, 1)).mean(axis=1).mean(axis=2)
+        self.eps_clean = np.min(self.normmat250_clean)
             
         print('Loaded clean cooler')
         indexes = {'file_index':[], 'in_index':[], 'is_sv':[]}
@@ -59,11 +64,14 @@ class TrainDatasetDiagonal(Dataset):
             sv_count+=sv_file.shape[0]
             c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
             self.coolers_list.append(c)
+            c_clean = cooler.Cooler(f'{clean_cooler_path}::/resolutions/{resolution}')
             matrixes_by_chr = {}
             for chr in c.chromnames:
                 matrix = c.matrix(balance=True).fetch(chr)
                 matrix_raw = c.matrix(balance=False).fetch(chr)
-                matrixes_by_chr[chr] = (matrix, matrix_raw)
+                #matrix_clean_raw = c_clean.matrix(balance=False).fetch(chr)
+                #matrix_clean_balance = c_clean.matrix(balance=True).fetch(chr)
+                matrixes_by_chr[chr] = (matrix, matrix_raw)#, matrix_clean_balance, matrix_clean_raw)
                     
             self.matrixes_list.append(matrixes_by_chr)
             neg_sv = {'chr':[], 'label':[], 'start':[], 'end':[]}
@@ -74,12 +82,11 @@ class TrainDatasetDiagonal(Dataset):
                 
                 chr_index = random.randint(0, len(c.chromsizes)-2)
                 chr_size = np.sum(c.chromsizes[chr_index])
-                x = random.randint(image_size//2*resolution, chr_size - (image_size//2*resolution)-1)
-                y =  random.randint(image_size*resolution, 10*image_size*resolution)
+                x = random.randint(image_size//2*resolution, chr_size - image_size//2*resolution-1)
                 neg_sv['chr'].append(c.chromnames[chr_index])
                 neg_sv['label'].append('negative')
                 neg_sv['start'].append(x)
-                neg_sv['end'].append(x+y)
+                neg_sv['end'].append(x)
 
                 indexes['file_index'].append(index)
                 indexes['in_index'].append(sv_file.shape[0]+i)
@@ -101,13 +108,12 @@ class TrainDatasetDiagonal(Dataset):
                 mat_bal = mat_cg
 
             mat250 = np.nanmean(np.nanmean(np.reshape(mat_bal, (self.image_size, 1, self.image_size, 1)), axis=3), axis=1)
-            mat250+=1e-6
             mat250[np.isnan(mat250)] = 0
             if isLog:
                 mat_logb = np.log(mat250 + eps) - np.log(normmat250 + eps)
             else:
                 mat_logb = np.sqrt(mat250 / normmat250)
-            return mat_logb - mat_logb_clean
+            return mat_logb
 
     def __getitem__(self, idx_d):
         idx = idx_d//2
@@ -123,8 +129,9 @@ class TrainDatasetDiagonal(Dataset):
             y = (sv_info.end)//self.resolution
         pad = self.image_size//2
         if row.is_sv:
-            x += random.randint(-pad//2, pad//2)
-            y += random.randint(-pad//2, pad//2)    
+            shift = random.randint(-pad//8, pad//8)
+            x += shift
+            y += shift
         if x-pad < 0 or y - pad < 0:
             mv = max(-(x-pad), -(y-pad))
             x+=mv
@@ -133,8 +140,15 @@ class TrainDatasetDiagonal(Dataset):
             x = min(x,  matrix_full[0].shape[0]-pad-1)
             y = min(y,  matrix_full[0].shape[0]-pad-1)
         mat_b = matrix_full[0][x-pad:x+pad, y-pad:y+pad]
-        mat_r = matrix_full[0][x-pad:x+pad, y-pad:y+pad]
+        mat_r = matrix_full[1][x-pad:x+pad, y-pad:y+pad]
+        #mat_clean_b = matrix_full[2][x-pad:x+pad, y-pad:y+pad]
+        #mat_clean_r = matrix_full[3][x-pad:x+pad, y-pad:y+pad]
+
         mat_norm = self.get_matrix(mat_b, mat_r, self.normmat250, self.eps, True, True)
+        #mat_norm_clean = self.get_matrix(mat_clean_b, mat_clean_r, self.normmat250_clean, self.eps_clean, True, True)
+
+        #mat = torch.from_numpy(mat_norm-mat_norm_clean).to(device=device, dtype=torch.float)
+        #mat_norm = 2.*(mat_norm - np.min(mat_norm))/np.ptp(mat_norm)-1
         mat = torch.from_numpy(mat_norm).to(device=device, dtype=torch.float)
         #mat = torch.nan_to_num(mat)
         try:
@@ -279,7 +293,8 @@ train_dataset = TrainDatasetDiagonal(
     clean_cooler_list=clean_train_coolers,
     resolution=10000,
     image_size=48,
-    normmat_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/Gor_SV_exp_1kb_10kb.npy',
+    normmat_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/Gor_CHM13_exp_1kb_10kb.npy',
+    normmat_clean_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_1kb_10kb.npy',
     detection=True,
     blur=False)
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -307,7 +322,8 @@ train_dataset = TrainDatasetDiagonal(
     clean_cooler_list=clean_train_coolers,
     resolution=50000,
     image_size=48,
-    normmat_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/Gor_SV_exp_1kb_50kb.npy',
+    normmat_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/Gor_CHM13_exp_1kb_50kb.npy',
+    normmat_clean_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_1kb_50kb.npy',
     detection=True,
     blur=False)
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -330,7 +346,8 @@ train_dataset = TrainDatasetDiagonal(
     clean_cooler_list=clean_train_coolers,
     resolution=25000,
     image_size=48,
-    normmat_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/Gor_SV_exp_1kb_25kb.npy',
+    normmat_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/Gor_CHM13_exp_1kb_25kb.npy',
+    normmat_clean_path='/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_1kb_25kb.npy',
     detection=True,
     blur=False)
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)

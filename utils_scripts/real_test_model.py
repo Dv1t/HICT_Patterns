@@ -8,12 +8,11 @@ import os
 import sys
 import pandas as pd
 import warnings
-import time
-from torchvision.transforms import GaussianBlur
 import random
-import torch.optim as optim
-import math
-import matplotlib.pyplot as plt
+from cooltools.lib.numutils import adaptive_coarsegrain
+from ml_collections import config_dict
+import argparse
+import json
 
 module_path = os.path.abspath(os.path.join(os.pardir, os.pardir))
 if module_path not in sys.path:
@@ -60,117 +59,217 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 batch_size = 512
 warnings.filterwarnings('ignore')
 
-def perform_detection(model, dataloader, round = True, label_cutoff=0.95):
+def perform_detection(models, dataloader, round = True, label_cutoff=0.95):
     detected = []
     cur_tqdm = tqdm(dataloader)
-    for data, position in cur_tqdm:
-        output = model(data)
+    for inputs, position, valid_mat in cur_tqdm:
+
+        inputs = inputs.to(device, non_blocking=True)
+        sigmoid  = nn.Sigmoid()
+        outputs_by_res = [torch.round(sigmoid(model(inputs[:, i]))) for model, i in zip(models,  range(inputs.shape[1]))]
+        #class_predictions = [torch.argmax(output, dim=1) for output in outputs_by_res]
+        stacked_predictions = torch.stack(outputs_by_res, dim=0)
+        majority_vote_predictions, _ = torch.mode(stacked_predictions, dim=0)
+        preds = majority_vote_predictions.resize(majority_vote_predictions.shape[0]).to(device, non_blocking=True, dtype=torch.float)
+        
         if round:
-            labels = torch.round(output).detach().cpu().numpy().reshape(-1)
+            labels = torch.round(preds).detach().cpu().numpy().reshape(-1)
+            labels = labels*valid_mat.detach().cpu().numpy().reshape(-1)
             x_list = position[0][labels==1]
             y_list = position[1][labels==1]
         else:
-            labels = output.detach().cpu().numpy().reshape(-1)
+            labels = preds.detach().cpu().numpy().reshape(-1)
+            labels = labels*valid_mat.detach().cpu().numpy().reshape(-1)
             x_list = position[0][labels>=label_cutoff]
             y_list = position[1][labels>=label_cutoff]
+            
         if len(x_list) > 0:
-            for x, y in zip(x_list.numpy(), y_list.numpy()):
-                detected.append((x, y))
+            for x, y, label in zip(x_list.numpy(), y_list.numpy(), labels):
+                detected.append((x, y, label))
     return detected
 
 def save_result_to_csv(local_path, detected, name):
     np.savetxt(f"{local_path}/{name}.csv",
         detected,
         delimiter =",",
-        fmt ='% s')
+        fmt ='% s',
+        header='x,y,label')
 
 
 class EvalDatasetDiag(Dataset):
-    def __init__(self, cooler_path, clean_cooler_path, resolution, image_size, step, device):
-        self.blur = GaussianBlur(kernel_size=3, sigma=1)
-        self.resolution = resolution
-        self.image_size = image_size
+    
+    def __init__(self, cooler_path, resolutions, image_size, clean_cooler_path, normmats_path, normmats_clean_path, step=1):
         self.step = step
-        self.device = device
-        c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
-        self.cooler = c
-        self.clean_cooler = cooler.Cooler(f'{clean_cooler_path}::/resolutions/{resolution}')        
-        all_chr_len = int(np.sum(c.chromsizes.values, dtype=object))
-        self.amount_steps = int((all_chr_len//resolution) // (step))
-        self.matrixes_by_chr = {}
-        for chr in c.chromnames:
-            matrix = c.matrix(balance=False).fetch(chr)
-            matrix_clean = self.clean_cooler.matrix(balance=False).fetch(chr)
-            
-            f_matrix = np.log10(matrix+1e-6) - np.log10(matrix_clean+1e-6)
-            f_matrix = 2.*(f_matrix - np.min(f_matrix))/np.ptp(f_matrix)-1
+        min_res = min(resolutions)
+        c = cooler.Cooler(f'{cooler_path}::/resolutions/{min_res}')
+        chr_sizes = [int(size) for size in c.chromsizes.values if int(size) > image_size*min_res*10]
+        all_chr_len = int(np.sum(chr_sizes))
+        self.amount_steps = int((all_chr_len//min_res) // (step))
 
-            self.matrixes_by_chr[chr] = torch.from_numpy(f_matrix).to(device=device, dtype=torch.float)
+        self.resolutions = resolutions
+        self.image_size = image_size
+        self.normmat250 = {}
+        self.eps = {}
+        self.normmat250_clean = {}
+        self.eps_clean = {}
+
+        for resolution, normmat_path, normmat_clean_path in zip(resolutions, normmats_path, normmats_clean_path):
+            normmat_bydist = np.exp(np.load(normmat_path))[:image_size*1]
+            normmat = normmat_bydist[np.abs(np.arange(image_size*1)[:, None] - np.arange(image_size*1)[None, :])]
+            self.normmat250[str(resolution)] = np.reshape(normmat, (image_size, 1, image_size, 1)).mean(axis=1).mean(axis=2)
+            self.eps[str(resolution)] = np.min(self.normmat250[str(resolution)])
+
+            normmat_bydist_clean = np.exp(np.load(normmat_clean_path)[:image_size*1])
+            normmat_clean = normmat_bydist_clean[np.abs(np.arange(image_size*1)[:, None] - np.arange(image_size*1)[None, :])]
+            self.normmat250_clean[str(resolution)] = np.reshape(normmat_clean, (image_size, 1, image_size, 1)).mean(axis=1).mean(axis=2)
+            self.eps_clean[str(resolution)] = np.min(self.normmat250_clean[str(resolution)])
+            
+        self.coolers_list = {}
+        self.matrixes_list = {}            
+        for resolution in resolutions:
+            c = cooler.Cooler(f'{cooler_path}::/resolutions/{resolution}')
+            self.coolers_list[str(resolution)] = c
+            c_clean = cooler.Cooler(f'{clean_cooler_path}::/resolutions/{resolution}')
+            matrixes_by_chr = {}
+            for chr in c.chromnames:
+                matrix_raw = c.matrix(balance=False, sparse=True).fetch(chr).tocsr()
+                matrix__raw_clean = c_clean.matrix(balance=False, sparse=True).fetch(chr).tocsr()
+                matrix = c.matrix(balance=True, sparse=True).fetch(chr).tocsr()
+                matrix_clean = c_clean.matrix(balance=True, sparse=True).fetch(chr).tocsr()
+                matrixes_by_chr[chr] = (matrix, matrix_raw, matrix_clean, matrix__raw_clean)
+   
+            self.matrixes_list[str(resolution)] = matrixes_by_chr
 
     def __len__(self):
         return self.amount_steps
     
+    def process_matrix(self, mat_raw, mat_bal, mat_raw_clean, mat_bal_clean, resolution, coarse_grain=False):
+        if coarse_grain:
+            mat_cg = adaptive_coarsegrain(mat_bal, mat_raw)
+            mat_cg_clean = adaptive_coarsegrain(mat_bal_clean, mat_raw_clean)
+        else:
+            mat_cg = mat_bal
+            mat_cg_clean = mat_bal_clean
+
+        mat = np.log(mat_cg+self.eps[str(resolution)])
+        mat[np.isnan(mat)] = 0
+        mat-= np.log(self.normmat250[str(resolution)]+self.eps[str(resolution)])
+
+        mat_clean = np.log(mat_cg_clean+self.eps_clean[str(resolution)])
+        mat_clean[np.isnan(mat_clean)] = 0
+        mat_clean -= np.log(self.normmat250_clean[str(resolution)]+self.eps_clean[str(resolution)])
+        return np.array([mat, mat_clean])
+    
     def __get_matrix(self, x, y):
-            x ,y = get_chromosome_coords((x, y), self.cooler.chromsizes, self.resolution)
-            chr_num = x[0]
-            
-            return self.matrixes_by_chr[c.chromnames[chr_num]][x[1]:x[1]+self.image_size, y[1]:y[1]+self.image_size]
+            pad = self.image_size//2
+            mat_list = []
+            valid_mat = True
+            for resolution in self.resolutions:
+                x ,y = get_chromosome_coords((x, y), self.coolers_list[str(resolution)].chromsizes, resolution)
+                chr_num = x[0]
+                x = x[1]
+                y = y[1]
+                c = self.coolers_list[str(resolution)]
+                matrix_full = self.matrixes_list[str(resolution)][c.chromnames[chr_num]]
+                if x-pad < 0 or y - pad < 0:
+                    mv = max(-(x-pad), -(y-pad))
+                    x+=mv
+                    y+=mv
+                if x+pad > matrix_full[0].shape[0] or y + pad > matrix_full[0].shape[0]:
+                    x = min(x,  matrix_full[0].shape[0]-pad-1)
+                    y = min(y,  matrix_full[0].shape[0]-pad-1)
+
+                mat_b = matrix_full[0][x-pad:x+pad, y-pad:y+pad].todense()
+                mat_r = matrix_full[1][x-pad:x+pad, y-pad:y+pad].todense()
+                mat_b_clean = matrix_full[2][x-pad:x+pad, y-pad:y+pad].todense()
+                mat_r_clean = matrix_full[3][x-pad:x+pad, y-pad:y+pad].todense()
+
+                if np.count_nonzero(np.nan_to_num(mat_r, posinf=2, neginf=2))/2304 < 0.25: #0.25
+                    valid_mat = False
+                small_matrix_start = mat_r[22:26, 22:26]
+                if np.count_nonzero(np.nan_to_num(small_matrix_start, posinf=2, neginf=2))/16 < 0.5: #0.5
+                    valid_mat = False
+
+                mat_norm = self.process_matrix(mat_r, mat_b, mat_r_clean, mat_b_clean,  resolution, True)
+
+                mat = torch.from_numpy(mat_norm).reshape((2, self.image_size, self.image_size)).to(device=device, dtype=torch.float)
+                mat_list.append(mat)
+            try:
+                tens = torch.stack(mat_list, dim=0).to(device=device, dtype=torch.float)
+            except RuntimeError:
+                tens = torch.zeros((3, 2, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
+                print(matrix_full[0].shape)
+                print(x)
+                print(y)
+
+            return tens, valid_mat
     
     def __getitem__(self, idx):
         x, y = idx*self.step, idx*self.step
-        mat = self.__get_matrix(x, y)
-        try:
-            tens = mat.reshape((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
-        except RuntimeError:
-            tens = torch.zeros((1, self.image_size, self.image_size)).to(device=self.device, dtype=torch.float)
-        return tens, (x, y)
+        tens, valid_mat = self.__get_matrix(x, y)
+        return tens, (x, y), valid_mat
 
 
-file_path = f'{local_path}data/mcool/Gor_CHM13_4DN.mcool'
-clean_file_path = f'{local_path}data/mcool/CHM13_4DN.mcool'
 
-c = cooler.Cooler(f'{file_path}::/resolutions/50000')
-#Stage 1 - 50k, diagonal detection
-print('Started Stage 1')
-resolution_1 = 50000
-image_size_1 = 48
-dataset = EvalDatasetDiag(file_path, clean_file_path, resolution=resolution_1, image_size=image_size_1, step=image_size_1//4, device=device)
-print('Stage 1 dataset loaded')
-model = DetectModel(image_size=image_size_1, num_models=10)
-model.to(device)
-model.load_state_dict(torch.load(f'weights_updated_normalization/torch_ensemble_50k_48_diag.pt', map_location=device))
-model.eval()
+parser = argparse.ArgumentParser()
+parser.add_argument('cfg_path', type=str, help='Path to file with config')
 
-detected = perform_detection(model, DataLoader(dataset, batch_size=64))
-save_result_to_csv(os.getcwd(), detected, 'real_tests/step_12_50kb')
+args = parser.parse_args()
+
+with open(args.cfg_path, 'r') as file:
+    cfg_dict = json.load(file)
+
+cfg = config_dict.ConfigDict(cfg_dict)
 
 
-c = cooler.Cooler(f'{file_path}::/resolutions/25000')
-#Stage 1 - 50k, diagonal detection
-print('Started Stage 1')
-resolution_1 = 25000
-image_size_1 = 48
-dataset = EvalDatasetDiag(file_path, clean_file_path, resolution=resolution_1, image_size=image_size_1, step=image_size_1//4, device=device)
-print('Stage 1 dataset loaded')
-model = DetectModel(image_size=image_size_1, num_models=10)
-model.to(device)
-model.load_state_dict(torch.load(f'weights_updated_normalization/torch_ensemble_25k_48_diag.pt', map_location=device))
-model.eval()
+validate_cooler = cfg.validate_cooler
+clean_validate_cooler = cfg.clean_validate_cooler
 
-detected = perform_detection(model, DataLoader(dataset, batch_size=64))
-save_result_to_csv(os.getcwd(), detected, 'real_tests/step_12_25kb')
 
-c = cooler.Cooler(f'{file_path}::/resolutions/10000')
-#Stage 1 - 50k, diagonal detection
-print('Started Stage 1')
-resolution_1 = 10000
-image_size_1 = 48
-dataset = EvalDatasetDiag(file_path, clean_file_path, resolution=resolution_1, image_size=image_size_1, step=image_size_1//4, device=device)
-print('Stage 1 dataset loaded')
-model = DetectModel(image_size=image_size_1, num_models=10)
-model.to(device)
-model.load_state_dict(torch.load(f'weights_updated_normalization/torch_ensemble_10k_48_diag.pt', map_location=device))
-model.eval()
+normmats_path_val= cfg.normmats_path_val
+normmats_clean_path_val= cfg.normmats_clean_path_val
 
-detected = perform_detection(model, DataLoader(dataset, batch_size=64))
-save_result_to_csv(os.getcwd(), detected, 'real_tests/step_12_10kb')
+
+validate_dataset = EvalDatasetDiag(
+    cooler_path=validate_cooler,
+    clean_cooler_path=clean_validate_cooler,
+    resolutions=cfg.resolutions,
+    image_size=48,
+    normmats_path=normmats_path_val,
+    normmats_clean_path=normmats_clean_path_val,
+    step=cfg.step)
+print('Total steps amount:', len(validate_dataset))
+validate_dataloader = DataLoader(validate_dataset, batch_size=batch_size, shuffle=False)
+
+learning_rate = 1e-6
+if cfg.loss == 'CrossEntropyLoss':
+    criterion = nn.CrossEntropyLoss()
+if cfg.loss == 'BCELoss':
+    criterion = nn.BCELoss()
+if cfg.loss == 'BCEWithLogitsLoss':
+    criterion = nn.BCEWithLogitsLoss()
+
+model_15kb = DetectModel(in_channels=2, image_size=48, num_models=10)
+model_15kb.to(device=device)
+model_15kb.load_state_dict(torch.load(f'{local_path}training/{cfg.model_path[0]}', map_location=device))
+model_15kb.eval()
+
+model_25kb = DetectModel(in_channels=2, image_size=48, num_models=10)
+model_25kb.to(device=device)
+model_25kb.load_state_dict(torch.load(f'{local_path}training/{cfg.model_path[1]}', map_location=device))
+model_25kb.eval()
+
+model_50kb = DetectModel(in_channels=2, image_size=48, num_models=10)
+model_50kb.to(device=device)
+model_50kb.load_state_dict(torch.load(f'{local_path}training/{cfg.model_path[2]}', map_location=device))
+model_50kb.eval()
+
+models = [model_15kb, model_25kb, model_50kb]
+
+num_epochs = 1
+dataloaders = dict()
+dataloaders['validate'] = validate_dataloader
+
+detected = perform_detection(models, validate_dataloader)
+save_result_to_csv(os.getcwd(), detected, cfg.result_save_path)
+print(f'Completed for {cfg.model_name} with config {args.cfg_path}')

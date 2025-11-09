@@ -1,0 +1,17 @@
+{
+    "validate_coolers": ["/mnt/tank/scratch/vdravgelis/ClusterBuffer/PanPan_Chm/PanPan_Chm.mcool"],
+    "clean_validate_coolers":["/mnt/tank/scratch/vdravgelis/data/mcool/CHM13_15_25_50.mcool"],
+    "validate_csvs":["/mnt/tank/scratch/vdravgelis/data/sv_csv/filtered_Pan_Chm_SVs.csv"],
+    "normmats_path_val":["/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/PanPan_Chm_exp_15kb.npy",
+                         "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/PanPan_Chm_exp_25kb.npy",
+                         "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/PanPan_Chm_exp_50kb.npy"],
+    "normmats_clean_path_val": ["/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_15kb.npy",
+                                "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_25kb.npy",
+                                "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_50kb.npy"],       
+    "loss": "CrossEntropyLoss", 
+    "model_path":["weights_gor_15_new/normmat_cg_48_diag_15Kbp.pt",
+                    "weights_gor_25_new/normmat_cg_48_diag_25Kbp.pt",
+                    "weights_gor_50_new/normmat_cg_48_diag_50Kbp.pt"],
+    "model_name": "gor_chm_new",
+    "resolutions": [15000, 25000, 50000]
+}

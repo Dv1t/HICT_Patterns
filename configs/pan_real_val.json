@@ -1,0 +1,18 @@
+{
+    "validate_cooler": "/mnt/tank/scratch/vdravgelis/ClusterBuffer/PanPan_Chm/PanPan_Chm.mcool",
+    "clean_validate_cooler":"/mnt/tank/scratch/vdravgelis/data/mcool/CHM13_15_25_50.mcool",
+    "normmats_path_val":["/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/PanPan_Chm_exp_15kb.npy",
+                         "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/PanPan_Chm_exp_25kb.npy",
+                         "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/PanPan_Chm_exp_50kb.npy"],
+    "normmats_clean_path_val": ["/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_15kb.npy",
+                                "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_25kb.npy",
+                                "/mnt/tank/scratch/vdravgelis/ClusterBuffer/apes_expected/CHM13_exp_50kb.npy"],       
+    "loss": "CrossEntropyLoss", 
+    "model_path":["weights_pan_15/normmat_cg_48_diag_15Kbp.pt",
+                    "weights_pan_25/normmat_cg_48_diag_25Kbp.pt",
+                    "weights_pan_50/normmat_cg_48_diag_50Kbp.pt"],
+    "model_name": "pan_chm_new",
+    "resolutions": [15000, 25000, 50000],
+    "result_save_path":"results_real_val_pan/voting_24.csv",
+    "step":24
+}
