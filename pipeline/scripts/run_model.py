@@ -166,14 +166,14 @@ class WholeMatrixPredictor():
         self.eps_clean = {}
 
         for resolution, normmat_path, normmat_clean_path in zip(resolutions, normmats_path, normmats_clean_path):
-            normmat_bydist = np.exp(np.load(normmat_path))[:image_size*1]
-            normmat = normmat_bydist[np.abs(np.arange(image_size*1)[:, None] - np.arange(image_size*1)[None, :])]
-            self.normmat250[str(resolution)] = np.reshape(normmat, (image_size, 1, image_size, 1)).mean(axis=1).mean(axis=2)
+            normmat_bydist = np.exp(np.load(normmat_path))[:image_size*4]
+            normmat = normmat_bydist[np.abs(np.arange(image_size*4)[:, None] - np.arange(image_size*4)[None, :])]
+            self.normmat250[str(resolution)] = np.reshape(normmat, (image_size, 4, image_size, 4)).mean(axis=1).mean(axis=2)
             self.eps[str(resolution)] = np.min(self.normmat250[str(resolution)])
 
-            normmat_bydist_clean = np.exp(np.load(normmat_clean_path)[:image_size*1])
-            normmat_clean = normmat_bydist_clean[np.abs(np.arange(image_size*1)[:, None] - np.arange(image_size*1)[None, :])]
-            self.normmat250_clean[str(resolution)] = np.reshape(normmat_clean, (image_size, 1, image_size, 1)).mean(axis=1).mean(axis=2)
+            normmat_bydist_clean = np.exp(np.load(normmat_clean_path)[:image_size*4])
+            normmat_clean = normmat_bydist_clean[np.abs(np.arange(image_size*4)[:, None] - np.arange(image_size*4)[None, :])]
+            self.normmat250_clean[str(resolution)] = np.reshape(normmat_clean, (image_size, 4, image_size, 4)).mean(axis=1).mean(axis=2)
             self.eps_clean[str(resolution)] = np.min(self.normmat250_clean[str(resolution)])
         self.coolers_list = {}
         self.matrixes_list = {}

@@ -96,22 +96,22 @@ class TrainDatasetDiagonal(Dataset):
 
 
     def get_matrix(self, mat_raw, mat_bal, mat_raw_clean, mat_bal_clean, eps, normmat250, eps_clean, normmat250_clean, coarse_grain=False):
-            if coarse_grain:
-                mat_cg = adaptive_coarsegrain(mat_bal, mat_raw)
-                mat_cg_clean = adaptive_coarsegrain(mat_bal_clean, mat_raw_clean)
-            else:
-                mat_cg = mat_bal
-                mat_cg_clean = mat_bal_clean
+        if coarse_grain:
+            mat_cg = adaptive_coarsegrain(mat_bal, mat_raw)
+            mat_cg_clean = adaptive_coarsegrain(mat_bal_clean, mat_raw_clean)
+        else:
+            mat_cg = mat_bal
+            mat_cg_clean = mat_bal_clean
 
-            mat_cg = np.log(mat_cg+eps)
-            mat_cg_clean = np.log(mat_cg_clean+eps_clean)
-            mat_cg[np.isnan(mat_cg)] = 0
-            mat_cg_clean[np.isnan(mat_cg_clean)] = 0
-            
-            mat_cg = mat_cg - np.log(normmat250+eps)
-            mat_cg_clean = mat_cg_clean - np.log(normmat250_clean+eps_clean)
+        mat_cg = np.log(mat_cg+eps)
+        mat_cg_clean = np.log(mat_cg_clean+eps_clean)
+        mat_cg[np.isnan(mat_cg)] = 0
+        mat_cg_clean[np.isnan(mat_cg_clean)] = 0
+        
+        mat_cg = mat_cg - np.log(normmat250+eps)
+        mat_cg_clean = mat_cg_clean - np.log(normmat250_clean+eps_clean)
 
-            return np.array([mat_cg, mat_cg_clean])
+        return np.array([mat_cg, mat_cg_clean])
     
     def __getitem__(self, idx_d):
         idx = idx_d//2

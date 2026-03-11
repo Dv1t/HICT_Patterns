@@ -1,5 +1,5 @@
 params.generate_npy_script = 'scripts/generate_npy.py'
-params.train_model_script = 'scripts/train_model.py'
+params.train_model_script = 'scripts/train_model_wm.py'
 params.models_library_scripts = 'scripts/models.py'
 params.run_model_script = 'scripts/run_model.py'
 
