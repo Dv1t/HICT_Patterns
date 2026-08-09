@@ -1,0 +1,3 @@
+# label<TAB>SV .mcool<TAB>clean .mcool<TAB>answer CSV
+Bonobo_Chm	/data/Bonobo_Chm.mcool	/data/CHM13_15_25_50.mcool	/data/Bonobo_answer.csv
+Gor_Chm	/data/Gor_Chm.mcool	/data/CHM13_15_25_50.mcool	/data/Gor_answer.csv

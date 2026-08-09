@@ -1,0 +1,17 @@
+easydict
+opencv-python
+simplejson
+lvis
+Pillow==9.5.0
+pytorch_msssim
+pandas
+hic-straw
+matplotlib
+scikit-image
+scipy
+einops
+tensorboard
+cooler
+numba
+pyBigWig
+timm==0.3.2

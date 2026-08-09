@@ -3,7 +3,6 @@ import cooler
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from tqdm import tqdm
-import os
 import warnings
 from cooltools.lib.numutils import adaptive_coarsegrain
 import argparse
@@ -90,7 +89,7 @@ class PatchesDataset(Dataset):
             mat = torch.from_numpy(mat_norm).reshape((2, self.image_size, self.image_size)).to(device=device, dtype=torch.float)
             mat_list.append(mat)
         tens = torch.stack(mat_list, dim=0).to(device=device, dtype=torch.float)
-        return tens, self.horizontals[0][idx], self.horizontals[1][idx], valid_mat_all
+        return tens, self.horizontals[0][idx], self.horizontals[1][idx], 1
 
 class WholeMatrixPredictor():
     def __perform_detection(self, dataloader, round = True, label_cutoff=0.95):
@@ -113,7 +112,7 @@ class WholeMatrixPredictor():
             y_list = position_y[labels==1]
                 
             if len(x_list) > 0:
-                for x, y, label in zip(x_list.numpy(), y_list.numpy(), labels):
+                for x, y in zip(x_list.numpy(), y_list.numpy()):
                     detected.append((x, y))
         return detected
     

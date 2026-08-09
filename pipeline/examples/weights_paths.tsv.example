@@ -1,0 +1,4 @@
+# checkpoint path<TAB>training resolution
+/data/weights/model_15000.pt	15000
+/data/weights/model_25000.pt	25000
+/data/weights/model_50000.pt	50000
