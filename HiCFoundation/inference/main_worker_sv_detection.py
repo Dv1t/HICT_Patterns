@@ -31,10 +31,28 @@ def configure_dataset(args,input_pkl):
     input_col_size = args.input_col_size
     input_coords = {}
     input_coords_df = pd.read_csv(args.input_coords)
+    total_rows = 0
     for chrom in input_coords_df['chr'].unique():
         input_coords[str(chrom)] = []
         for x, y in input_coords_df[input_coords_df['chr'] == chrom][['x', 'y']].values:
             input_coords[str(chrom)].append((x//resolution, y//resolution))
+        total_rows += len(input_coords[str(chrom)])
+
+    #dedup: input_coords are already resolution-binned, so exact duplicate
+    #(x,y) pairs are common in breakpoint call sets (e.g. multiple supporting
+    #read-pairs/callers hitting the same bin). Each duplicate would otherwise
+    #trigger its own redundant model forward pass AND its own redundant
+    #entry in the off-diagonal sparse accumulator in inference_worker, so
+    #dedup here saves both compute and memory before any windows are built.
+    total_unique = 0
+    for chrom in input_coords:
+        before = len(input_coords[chrom])
+        input_coords[chrom] = list(set(input_coords[chrom]))
+        after = len(input_coords[chrom])
+        total_unique += after
+        if before != after:
+            print(f"{chrom}: deduped breakpoints {before} -> {after}")
+    print(f"Total breakpoints: {total_rows} -> {total_unique} after dedup")
 
     dataset = Inference_Dataset(data_path=input_pkl,
                                 input_coords=input_coords,

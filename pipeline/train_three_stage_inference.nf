@@ -33,8 +33,7 @@ required_params.each { p ->
         error "Missing required parameter: --${p}"
 }
 
-params.stage3_run_model_script = params.stage3_run_model_script ?: 'scripts/run_model_enhanced.py'
-params.outdir = params.outdir ?: "${params.label}_trained_three_stage_output"
+params.outdir = "${params.label}_trained_three_stage_output"
 
 log.info """
 HICT PATTERNS  T R A I N + T H R E E - S T A G E  P I P E L I N E
@@ -69,11 +68,11 @@ process rename_answer {
 }
 
 workflow {
-    generate_script = file(params.generate_npy_script)
-    train_script = file(params.train_model_script)
-    models_library = file(params.models_library_scripts)
-    stage1_inference_script = file(params.run_model_script)
-    stage3_inference_script = file(params.stage3_run_model_script)
+    generate_script = file("${projectDir}/scripts/generate_npy.py")
+    stage1_inference_script = file("${projectDir}/scripts/run_model.py")
+    stage3_inference_script = file("${projectDir}/scripts/run_model_enhanced.py")
+    train_script = file("${projectDir}/scripts/train_model_wm.py")
+    models_library = file("${projectDir}/scripts/models.py")
 
     train_meta_ch = Channel
         .fromPath(params.input_train_cooler_paths)
@@ -200,12 +199,12 @@ workflow {
     )
 
     // Stage 2: use Stage 1's CSV as HiCFoundation input_coords.
-    stage2_input = inference_model.result.map { input_coords ->
+    stage2_input = inference_model.out.result.map { input_coords ->
         tuple(params.label, file(params.cooler_path), input_coords)
     }
     stage2 = enhance_with_hicfoundation(
         stage2_input,
-        file(params.hicfoundation_inference),
+        file("${file(projectDir).parent}/HiCFoundation/inference.py"),
         file(params.hicfoundation_model)
     )
 

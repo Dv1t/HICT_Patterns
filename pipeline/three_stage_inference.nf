@@ -13,7 +13,6 @@
  *   --weights_paths /path/Pan_troglodytes_weights_paths.tsv \
  *   --stage3_weights_paths /path/Gor_Chm_weights_paths.tsv \
  *   --label Gor_Chm \
- *   --hicfoundation_inference ../HiCFoundation/inference.py \
  *   --hicfoundation_model ../HiCFoundation/hicfoundation_model/hicfoundation_resolution.pth.tar
  */
 
@@ -22,7 +21,6 @@ def required_params = [
     'clean_cooler_path',
     'label',
     'weights_paths',
-    'hicfoundation_inference',
     'hicfoundation_model'
 ]
 
@@ -32,8 +30,7 @@ required_params.each { p ->
 }
 
 def stage3_weights_paths = params.weights_paths
-params.stage3_run_model_script = params.stage3_run_model_script ?: 'scripts/run_model_enhanced.py'
-params.outdir = params.outdir ?: "${params.label}_three_stage_output"
+params.outdir = "${params.label}_three_stage_output"
 
 log.info """
 HICT PATTERNS  T H R E E - S T A G E  P I P E L I N E
@@ -50,9 +47,9 @@ include { calculate_expected as calculate_expected_stage3 } from './modules/calc
 include { enhance_with_hicfoundation } from './modules/enhance.nf'
 
 workflow {
-    generate_script = file(params.generate_npy_script)
-    stage1_inference_script = file(params.run_model_script)
-    stage3_inference_script = file(params.stage3_run_model_script)
+    generate_script = file("${projectDir}/scripts/generate_npy.py")
+    stage1_inference_script = file("${projectDir}/scripts/run_model.py")
+    stage3_inference_script = file("${projectDir}/scripts/run_model_enhanced.py")
 
     stage1_weights_ch = Channel
         .fromPath(params.weights_paths)
@@ -105,14 +102,14 @@ workflow {
         Channel.of(params.label)
     )
 
-    stage2_input = inference_model.result
+    stage2_input = inference_model.out.result
         .map { input_coords ->
             tuple(params.label, file(params.cooler_path), input_coords)
         }
 
     stage2 = enhance_with_hicfoundation(
         stage2_input,
-        file(params.hicfoundation_inference),
+        file("${file(projectDir).parent}/HiCFoundation/inference.py"),
         file(params.hicfoundation_model)
     )
 

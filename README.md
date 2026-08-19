@@ -41,10 +41,26 @@ No manual container building or environment setup is required beyond this: the c
 
 ### Getting the pipeline
 
+This repository uses [Git LFS](https://git-lfs.com/) for large files, including model checkpoints. Install and initialize Git LFS **before** cloning so these files are downloaded as their actual binary contents rather than small text pointer files:
+
 ```bash
 git clone https://github.com/Dv1t/HICT_Patterns.git
 cd HICT_Patterns/pipeline
 ```
+
+If Git LFS was not available when you cloned the repository, install it with your system package manager and then retrieve the LFS-managed files:
+
+```bash
+cd HICT_Patterns
+git lfs install
+git lfs pull
+cd pipeline
+```
+
+Verify the checkout with `git lfs ls-files`. In particular,
+`HiCFoundation/hicfoundation_model/hicfoundation_resolution.pth.tar` must be a
+large binary checkpoint, not a small file whose first line is
+`version https://git-lfs.github.com/spec/v1`.
 
 All Nextflow commands below are expected to be run from the `pipeline/` directory, so that the relative paths in `nextflow.config` resolve correctly.
 
