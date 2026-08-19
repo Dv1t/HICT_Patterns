@@ -66,7 +66,7 @@ All Nextflow commands below are expected to be run from the `pipeline/` director
 
 ### Model weights
 
-Download the trained HICT Patterns model weights and unzip/copy them into the repository's `weights/` directory (i.e. `../weights/` relative to `pipeline/`).
+The pre-trained (on Gorilla gorilla) HICT Patterns model weights are available in `pipeline/weights`.
 
 For each set of weights you plan to use, create a tab-separated file listing each model checkpoint together with the resolution it was trained for, e.g.:
 
