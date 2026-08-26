@@ -143,7 +143,7 @@ class TrainDataset(Dataset):
         mat_norm = self.get_matrix(mat_r, mat_b, mat_r_clean, mat_b_clean, eps, normmat250, eps_clean, normmat250_clean,  True)
         if np.random.random() > 0.6:
                 mat_norm = np.rot90(mat_norm, k=2)
-        tens = torch.from_numpy(mat_norm.copy()).reshape((2, self.image_size, self.image_size)).to(device=device, dtype=torch.float)
+        tens = torch.from_numpy(mat_norm.copy()).reshape((2, self.image_size, self.image_size)).to(dtype=torch.float)
 
         return tens, 1 if row.is_sv else 0
 

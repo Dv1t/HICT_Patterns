@@ -86,10 +86,10 @@ class PatchesDataset(Dataset):
             mat_norm, valid_mat = self.__get_matrix(self.horizontals[0][idx], self.horizontals[1][idx], resolution, 
                                         matrix_raw, matrix, matrix_raw_clean, matrix_clean)
             valid_mat_all*=valid_mat
-            mat = torch.from_numpy(mat_norm).reshape((2, self.image_size, self.image_size)).to(device=device, dtype=torch.float)
+            mat = torch.from_numpy(mat_norm).reshape((2, self.image_size, self.image_size)).to(dtype=torch.float)
             mat_list.append(mat)
-        tens = torch.stack(mat_list, dim=0).to(device=device, dtype=torch.float)
-        return tens, self.horizontals[0][idx], self.horizontals[1][idx], 1
+        tens = torch.stack(mat_list, dim=0).to(dtype=torch.float)
+        return tens, self.horizontals[0][idx], self.horizontals[1][idx], int(valid_mat_all)
 
 class WholeMatrixPredictor():
     def __perform_detection(self, dataloader, round = True, label_cutoff=0.95):

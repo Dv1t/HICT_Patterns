@@ -125,6 +125,7 @@ def main_worker(args, input_pkl):
             return_dict[key_list[0]] = return_dict[key]
             del return_dict[key]
     write_pickle(return_dict,output_pkl)
+    del return_dict
     input_file = os.path.abspath(args.input)
     extention_name = input_file.split('.')[-1]
     output_file = os.path.join(output_dir,"HiCFoundation_enhanced."+extention_name)

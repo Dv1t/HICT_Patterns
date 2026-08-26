@@ -111,8 +111,9 @@ def convert_to_pkl(input_file, output_dir,config_resolution):
 def pkl2others(input_pkl, output_file,config_resolution,genome_id):
     output_dir = os.path.dirname(output_file)
     os.makedirs(output_dir,exist_ok=True)
-    data=load_pkl(input_pkl)
+    
     if output_file.endswith('.txt') or output_file.endswith('.pairs'):
+        data=load_pkl(input_pkl)
         #write to simple txt
         # [chr1, pos1, chr2, pos2, count]
         with open(output_file,'w') as file:
@@ -130,6 +131,7 @@ def pkl2others(input_pkl, output_file,config_resolution,genome_id):
                         count = data[chrom].data[i]
                         file.write(f".\t{chrom}\t{row*config_resolution}\t{chrom}\t{col*config_resolution}\t{count}\n")
     elif output_file.endswith('.npy'):
+        data=load_pkl(input_pkl)
         if len(data)>1:
             print("Warning: multiple chromosomes detected, please check the output in .pkl format:",input_pkl)
             print("The format is dict in format of [chr]:[scipy.sparse.coo_matrix]")
